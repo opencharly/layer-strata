@@ -180,8 +180,21 @@ strata:
                   rm -rf build build-vision
               cache:
                   - /root/.cache/pip
-                  - /opt/strata/build
-                  - /opt/strata/third_party
+                  # NOT cached: /opt/strata/build and /opt/strata/third_party.
+                  #
+                  # Both were cached for speed, and both made the build NON-HERMETIC: they persist across
+                  # builds, so the source tree and the CMake build directory seen by one run can differ
+                  # from those of the next. Measured: two consecutive builds of the SAME commit reported
+                  # different `ggml commit:` values at configure (`unknown` vs `3cf03257f`) and produced
+                  # DIFFERENT TARGET SETS -- one had a `strata` target, the next did not
+                  # ("ninja: error: unknown target 'strata'"). A gate that does not build a reproducible
+                  # artifact is not a gate: it can pass, or fail, for reasons unrelated to the commit
+                  # under test (R7/R10).
+                  #
+                  # The engine source is pinned (LLAMA_CPP_COMMIT + the pinned release tag), so re-fetching
+                  # it is deterministic; the pip cache above stays because package downloads ARE reproducible
+                  # and it is the slow part. Cost of this choice: a slower bake, in exchange for a gate that
+                  # measures the tree that will be pushed.
               run_as: root
             # NOTE -- why `reasoning_effort` is NOT here. It is a REQUEST-body parameter, not a run-config
             # key: it appears nowhere in the engine's own config surface (verified against serve/runconfig.py
