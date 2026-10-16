@@ -1,0 +1,345 @@
+strata:
+    candy:
+        # Strata — the Qwen3.8-Flash-Next inference engine, as a rootless OpenCharly layer.
+        #
+        # Everything below follows three ledger decisions that were settled with the operator on
+        # 2026-10-16 (opencharly/opencharly, plan/strata-layer-and-pod.md): the engine is BAKED at
+        # image build so the first start never compiles it (D6), the model store is a host path the
+        # operator defines under their XDG data directory (D15/D16), and the configuration is
+        # charly.yml fields plus a charly-authored overlay merged by mechanism (a) (D12).
+        description: |
+            Strata — the Qwen3.8-Flash-Next inference engine (125B MoE) serving an OpenAI- and
+            Anthropic-compatible API on port 8080, with the engine compiled INTO THE IMAGE exactly
+            the way upstream's own Dockerfile compiles it.
+
+            Three properties matter to a consumer:
+
+            - **The engine is baked, so the first start never compiles.** `engine/BUILD.json`
+              records `source: "local"` with the matching source hash, which is what makes
+              `setup.py` reuse the engine instead of rebuilding it. The stamp is written only
+              after a successful build AND the runtime checks the binary self-reports the stamped
+              version, because upstream #2054 shows a *failed* build can leave a stamp that lies.
+            - **The model store is yours, mounted not baked.** The weights are 37-188 GB and are
+              licensed separately from the MIT engine (Qwen Community License 1.0 / Apache-2.0 /
+              Swift Open License), so they never enter the image. `/data` is a named volume here
+              and a *host bind* on the deployment: `host: ~/.local/share/strata` is the committed
+              default, because that is `$XDG_DATA_HOME`'s default and charly expands `~`/`$HOME`
+              but not `$XDG_*` (see opencharly/spec#260).
+            - **The whole configuration is the deployment's `env:`.** The setup choices are the
+              engine's own documented variables — FAMILY, MODEL, CONTEXT, VISION, KV, GPU, GPUS,
+              LAYER_SPLIT, LOW_RAM, GGUF_DIR, RESIDENT_BUDGET_GIB, KV_STREAMING, REINSTALL — with
+              the candy's `var:` as the documented default, and the server-behaviour keys come
+              from the charly-authored overlay in `/opt/strata/charly-overlay.json`.
+
+            It runs **rootless**: no privileged container, no root-owned host path. `HOST` stays
+            `0.0.0.0` because the pod publishes the port, which is why `STRATA_API_KEY` is a
+            `secret_require` — upstream's own advice is "always set a key" before exposing the
+            port. `/health` is answered before the API-key gate, so a probe needs no secret.
+
+            The weights are NOT in this image and no first start is triggered by building it.
+        require:
+            - '@github.com/opencharly/layer-supervisord:v2026.288.2336'
+            # The GPU stack is intrinsic, unlike the `ollama` candy's deliberately GPU-agnostic
+            # declaration: Strata has NO CPU-only mode and its engine is compiled with
+            # -DSTRATA_ENABLE_CUDA=ON, so nvcc is a BUILD-time requirement (ledger D4).
+            - '@github.com/opencharly/layer-nvidia:v2026.289.1301'
+            - '@github.com/opencharly/layer-cuda:v2026.289.1250'
+            # NOTE -- distro-cachyos is deliberately NOT bumped to its newest tag (v2026.289.0901), even
+            # though a newer one exists in the BOX's import below. Part II #3 requires every `distro-*` pin
+            # to equal CHARLY's own gitlink, and charly's gitlink (673b1b6b90ab) resolves exactly to
+            # v2026.281.1001 -- the same commit the umbrella pins. "Newest" is the wrong rule for a
+            # distro-* pin; alignment is.
+            # gcc/g++/make/pkg-config for the engine bake. cmake and ninja come from
+            # requirements.txt into the venv, so they are deliberately NOT system packages.
+            - '@github.com/opencharly/layer-build-toolchain:v2026.271.1840'
+        var:
+            # ---- the BUILD-time surface (upstream's Dockerfile ARGs; ledger D6 / §5.2.1b) ----
+            # A post-2026-10-06 tag, never `main`: the repo's history was rewritten and a
+            # `main` URL would also poison the download verb's content-addressed cache.
+            STRATA_VERSION: v0.1.44.1
+            # Upstream's own pinned ggml source; the engine does not build against anything else.
+            STRATA_LLAMA_COMMIT: 3cf03257f219afbe7334045ff7c6a06ac68c627d
+            # docker build has no GPU, so the CUDA architectures are fixed here. 75=RTX20,
+            # 86=RTX30, 89=RTX40, 120=RTX50, 80=A-series; CMakeLists refuses anything below 75.
+            # Narrow it per image for a much faster build (box/strata pins 89).
+            STRATA_CUDA_ARCHS: "75;80;86;89;120"
+            # "0" skips the image-encoder build (it is optional; VISION selects its use).
+            STRATA_BUILD_VISION: "1"
+            # Non-AVX2 hosts need a differently compiled engine ("avx" or "none").
+            STRATA_ISA_FLOOR: ""
+            # ---- the setup-choice DEFAULTS (ledger §5.2.1) ----
+            # Every one of these is a Layer-A field: a deployment's `env:` overrides it, and the
+            # value flows through the engine's own documented variable of the same name. Nothing
+            # is renamed.
+            FAMILY: qwen
+            MODEL: IQ2_XS
+            CONTEXT: "32768"
+            VISION: "no"
+            KV: ""
+            GPU: ""
+            GPUS: ""
+            LAYER_SPLIT: ""
+            # Always passed downstream: setup.py measures RAM from /proc/meminfo, which in a
+            # container is the host's total, not the cap, so a capped container must ask for
+            # the low-RAM mode itself.
+            LOW_RAM: auto
+            RESIDENT_BUDGET_GIB: ""
+            KV_STREAMING: ""
+            # Image-wide on purpose: the pod publishes the port, so 0.0.0.0 is right here and
+            # this is not a per-deployment knob.
+            HOST: 0.0.0.0
+            PORT: "8080"
+            GGUF_DIR: ""
+            STRATA_DATA: /data
+            # Which engine the entrypoint runs: "strata" (the real one) or "mock" (upstream's
+            # scripted, GPU-free, model-free mode for clients and tests). The deterministic bed
+            # sets it to `mock`; a real deployment never sets it.
+            STRATA_ENGINE: strata
+            # The server-behaviour keys (Layer B) the operator wants, as a JSON object, merged into
+            # the run config on the volume at every start. Anything the engine accepts at runtime may
+            # go here EXCEPT its own setup-recorded keys -- the merge helper refuses those, because a
+            # settings pass rewrites them. Empty means the baked defaults in STRATA_OVERLAY apply.
+            # The key names are not listed on purpose: `charly strata config` (or GET /config) is the
+            # engine's own published catalogue, and a copy here would drift from it.
+            STRATA_OVERLAY_JSON: ""
+            # The overlay the entrypoint merges into the run config on the volume (Layer B).
+            STRATA_OVERLAY: /opt/strata/charly-overlay.json
+        distro:
+            arch:
+                package:
+                    # `python` on Arch IS python3; setup.sh needs an interpreter >= 3.10 to build
+                    # the venv. Declared rather than assumed, and idempotent where the base
+                    # already carries it.
+                    - python
+        port:
+            - 8080
+        volume:
+            # A NAMED volume only — a candy can never pin a host path (ledger §4.8/D15): the
+            # deploy binds it (`{name: strata-data, type: bind, host: ~/.local/share/strata,
+            # path: /data}`) or `charly config strata --bind strata-data` does.
+            - name: strata-data
+              path: /data
+        secret_require:
+            # `require`, not `accept`: a missing required secret fails at `charly config` instead
+            # of silently leaving the endpoint open. This is the ENV name; the charly entrypoint
+            # projects it to the `API_KEY` name upstream's contract reads.
+            - name: STRATA_API_KEY
+              description: >-
+                  Bearer / x-api-key token for /v1/*. Mandatory in practice: the pod publishes
+                  8080, and upstream's own advice is to set a key before exposing the port.
+                  /health stays pre-auth, so a liveness probe needs no secret.
+        env_provide:
+            # Product-scoped only. A generic OPENAI_BASE_URL would silently redirect every
+            # OpenAI-speaking service in the same pod, so consumers opt in with env_accept.
+            STRATA_BASE_URL: "http://{{.ContainerName}}:8080/v1"
+        service:
+            - name: strata
+              # The charly-owned entrypoint: env -> overlay merge -> upstream's own install/launch
+              # flow (mechanism (a), ledger D12). It also implements the GPU-free `--engine mock`
+              # posture the deterministic bed uses (D7).
+              exec: /opt/strata/charly-entrypoint.sh
+              # NOT supervisord's 10 s default: the engine releases tens of GB of page-locked RAM
+              # on SIGTERM, and a too-early SIGKILL leaves stale VRAM and a wedged GPU hand-off.
+              stop_timeout: 90s
+              restart: always
+              enable: true
+        plan:
+            - run: fetch the pinned Strata source tree
+              download: "https://github.com/Niko1221/Strata/archive/refs/tags/${STRATA_VERSION}.tar.gz"
+              extract: tar.gz
+              to: /opt/strata
+              strip_components: 1
+              run_as: root
+            - run: install the engine-bake script (upstream's own setup.py functions)
+              copy: charly-build-engine.py
+              to: /opt/strata/charly-build-engine.py
+              mode: "0644"
+              run_as: root
+            - run: install the config-merge helper
+              copy: charly-merge-config.py
+              to: /opt/strata/charly-merge-config.py
+              mode: "0644"
+              run_as: root
+            - run: install the charly entrypoint
+              copy: charly-entrypoint.sh
+              to: /opt/strata/charly-entrypoint.sh
+              mode: "0755"
+              run_as: root
+            - run: create the venv and bake the engine, exactly as upstream's Dockerfile does
+              command: |
+                  cd /opt/strata
+                  python3 -m venv .venv
+                  .venv/bin/pip install --no-cache-dir --upgrade pip
+                  .venv/bin/pip install --no-cache-dir -r requirements.txt
+                  .venv/bin/python /opt/strata/charly-build-engine.py
+                  rm -rf build build-vision
+              cache:
+                  - /root/.cache/pip
+                  - /opt/strata/build
+                  - /opt/strata/third_party
+              run_as: root
+            # NOTE -- why `reasoning_effort` is NOT here. It is a REQUEST-body parameter, not a run-config
+            # key: it appears nowhere in the engine's own config surface (verified against serve/runconfig.py
+            # and serve/server.py at the pinned tag), and it demonstrably changes a response when sent in the
+            # request body (measured: `none` yields non-null content where the default spends the budget on
+            # thinking). Writing it into the run config would be an inert key that CLAIMS to set a behaviour
+            # -- the same class of falsehood as a fabricated `ptx` in the engine stamp. The verified
+            # mechanism for it is per-request; the candy's completion probe uses exactly that.
+            - run: write the server-behaviour overlay the entrypoint merges into the run config
+              config: /opt/strata/charly-overlay.json
+              mode: "0644"
+              run_as: root
+              content: |
+                  {
+                    "open_browser": false,
+                    "aliases": ["strata", "qwen3.8-flash-next"],
+                    "lazy_load": true,
+                    "idle_unload_s": 900,
+                    "engine_silence_s": 300,
+                    "parallel": 1
+                  }
+            # ---- the candy's own probes: authored HERE so every composing box and bed inherits
+            # them (R3 -- one copy of every probe, never repeated per bed) ----
+            - check: the baked engine binary is present
+              id: strata-engine-binary
+              file:
+                  file: /opt/strata/engine/strata
+                  exists: true
+            - check: the stamp records a locally baked engine, written only after a successful build
+              id: strata-engine-stamp
+              exit_status: 0
+              command: >-
+                  python3 -c "import json,sys; m=json.load(open('/opt/strata/engine/BUILD.json'));
+                  sys.exit(0 if m.get('source')=='local' and m.get('archs') and m.get('src') else 1)"
+            - check: the charly entrypoint, the merge helper and the overlay are installed
+              id: strata-charly-files
+              file:
+                  file: /opt/strata/charly-entrypoint.sh
+                  exists: true
+            - check: the venv the engine was built in is present
+              id: strata-venv
+              file:
+                  file: /opt/strata/.venv/bin/python
+                  exists: true
+            # NOTE -- there is deliberately NO candy-level check that RUNS the engine binary. It cannot
+            # be satisfied without a device (the binary loads libcuda, which CDI injects at runtime and
+            # which no build context has), so such a check would break the deterministic GPU-free bed --
+            # the one bed whose entire purpose is to need no card. Its unique value, "the binary
+            # self-reports the version its stamp claims", is asserted in check-strata-gpu-pod, where a
+            # device exists; everything provable GPU-free is already covered by the stamp check above.
+            # (This is the round-12 principle applied a second time: a probe that needs a device belongs
+            # to the substrate that has one.)
+            - check: the running server answers /health, which is pre-auth by design
+              id: strata-health
+              context: [runtime]
+              http:
+                  http: "http://127.0.0.1:${HOST_PORT:8080}/health"
+                  status: 200
+            - check: the server is up with the deployment's key and publishes the projection
+              id: strata-projection
+              context: [runtime]
+              exit_status: 0
+              # What THIS check can honestly prove: /health answers (pre-auth by design), the key the
+              # deployment supplied actually reached the engine (`api_key`), and the projection FIELDS
+              # are published at all. It deliberately does NOT assert the projection's VALUES.
+              #
+              # Why not: the deterministic bed runs the scripted engine, which is started with NO run
+              # config, so `max_context` and `images` come from the engine's own defaults -- measured
+              # 32768 and false. The bed's CONTEXT happens to equal that default, so an equality
+              # assertion would pass by coincidence and could not fail (R7). The VALUES are asserted
+              # where a real config exists: the GPU bed's own step, which is the only place the
+              # env -> config -> server chain is provable.
+              command: >-
+                  python3 -c "import json,os,sys,urllib.request;
+                  h=json.load(urllib.request.urlopen('http://127.0.0.1:${HOST_PORT:8080}/health'));
+                  fields=('max_context','images','model');
+                  sys.exit(0 if h.get('status')=='ok' and h.get('api_key') is True
+                             and all(f in h for f in fields) else 1)"
+            - check: the API gate is real once a key is set, so /v1/models needs it
+              id: strata-api-gate
+              context: [runtime]
+              exit_status: 0
+              command: >-
+                  python3 -c "import json,os,sys,urllib.request;
+                  r=urllib.request.Request('http://127.0.0.1:${HOST_PORT:8080}/v1/models',headers={'Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
+                  sys.exit(0 if json.load(urllib.request.urlopen(r)).get('data') else 1)"
+            - check: "and it is CLOSED without one -- a negative control, 401 rather than 200"
+              id: strata-api-gate-closed
+              context: [runtime]
+              # A positive probe alone cannot tell a working gate from a gate that was never
+              # installed. Measured on the engine: no key -> 401, with the key -> 200.
+              http:
+                  http: "http://127.0.0.1:${HOST_PORT:8080}/v1/models"
+                  status: 401
+            - check: "a completion round-trips, with reasoning_effort none and room for the answer"
+              id: strata-completion
+              context: [runtime]
+              exit_status: 0
+              # Two measured traps sit behind this probe, either of which would make it assert
+              # nothing: the engine defaults to thinking, and a small max_tokens truncates the
+              # answer to `content: null` with finish_reason "length" (measured at 16 tokens).
+              # With reasoning_effort none AND max_tokens 64 the content is non-null and
+              # finish_reason is "stop".
+              command: >-
+                  python3 -c "import json,os,sys,urllib.request;
+                  body=json.dumps({'model':'strata','messages':[{'role':'user','content':'say hi'}],'max_tokens':64,'reasoning_effort':'none'}).encode();
+                  r=urllib.request.Request('http://127.0.0.1:${HOST_PORT:8080}/v1/chat/completions',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
+                  c=json.load(urllib.request.urlopen(r))['choices'][0];
+                  sys.exit(0 if c['message'].get('content') and c.get('finish_reason')=='stop' else 1)"
+
+strata-layer-skill:
+    skill:
+        name: strata-layer
+        family: strata
+        owner: strata
+        description: |-
+            The `strata` LAYER — the engine itself: baked from the pinned upstream tag, with the
+            setup-choice surface, the rootless XDG model store, the supervised service and the
+            config-overlay merge. Use when composing an image that must SERVE Qwen3.8-Flash-Next, or
+            when a deployment's `env:` must reach the engine. For merely talking to a running server
+            from the host, use the `strata` plugin skill instead.
+        content: |-
+            # strata-layer
+
+            The engine layer behind `box/strata`. It installs Strata from a pinned tag and **bakes the
+            CUDA engine into the image** exactly the way upstream's own Dockerfile does, so a fresh
+            volume's first start reuses the engine instead of compiling for 20-40 minutes.
+
+            ## What a consumer must supply
+
+            | Thing | Why |
+            |---|---|
+            | `security: {group_add: [keep-groups]}` or CDI | the engine needs the GPU device |
+            | a **writable** `/data` on the first start | the pack build and the `.done` markers |
+            | `secret: [{name: STRATA_API_KEY}]` | the pod publishes :8080; the candy requires a key |
+            | a **bind** for the model store | `{name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}` — rootless, XDG; a candy can never pin a host path |
+
+            ## The configuration surface
+
+            Everything is the deployment's `env:` — the engine's own documented variables, renamed by
+            nothing: `FAMILY`, `MODEL`, `CONTEXT`, `VISION`, `KV`, `GPU`, `GPUS`, `LAYER_SPLIT`,
+            `LOW_RAM`, `RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `REINSTALL`, `GGUF_DIR`, plus
+            `STRATA_OVERLAY_JSON` for the server-behaviour keys. `LOW_RAM` is always passed through:
+            `setup.py` measures RAM from `/proc/meminfo`, which in a container is the HOST's total,
+            so a memory-capped container must ask for the low-RAM path itself.
+
+            ## What it probes
+
+            The candy carries the probes, so every composing image and bed inherits all nine of them.
+            At **build**: the engine binary exists, the stamp records `source: local` with matching
+            `archs`/`src`, and the helper scripts plus the venv are installed. At **runtime**:
+            `/health` answers, the deployment's key reached the engine, the `/v1/*` gate is open WITH
+            the key and closed WITHOUT it, and a `reasoning_effort: none` completion round-trips.
+
+            There is deliberately **no** candy-level probe that EXECUTES the engine binary: it loads
+            libcuda, which CDI injects only at runtime on a device-bearing host, so such a probe would
+            break the one bed whose purpose is to need no card. The binary-versus-stamp check lives in
+            `check-strata-gpu-pod` instead, where a device exists.
+
+            ## Related
+
+            - `/charly-strata:strata` — the BOX (this layer on the CachyOS base).
+            - `/charly-strata:strata` (plugin) — `charly strata`, the host-side management CLI.
+            - `/charly-ollama:ollama-layer` — the other local inference server in the org; it is
+              GPU-agnostic and serves many small models, while this one is CUDA-only and serves one
+              large one.

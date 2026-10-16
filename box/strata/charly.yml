@@ -1,0 +1,111 @@
+strata:
+    candy:
+        # The Strata family's image. It composes exactly one candy — this repo's layer — and the GPU
+        # stack arrives transitively through that candy's `require:` (nvidia + cuda + supervisord +
+        # build-toolchain), so the image and the layer can never disagree about the GPU contract.
+        enabled: true
+        # LOCKED by the operator (ledger D1, 2026-10-16): the CachyOS family. Arch `extra` carries
+        # cuda 13.4.3, nvidia-container-toolkit 1.20.1 and nvidia-utils 615.78.08, so the base
+        # satisfies both Strata's CUDA 13 floor and its driver >= 580 requirement. Upstream's own
+        # container work is Ubuntu-based; that path is deliberately not pursued.
+        base: cachyos.cachyos
+        # NOTE — why there is no CUDA-arch narrowing here. The candy defaults to the fat
+        # "75;80;86;89;120" so any card works, and a narrower list would build far faster. It is
+        # NOT expressible from an image: #Box has no `var:`, and a box-level `env:` is emitted only
+        # as the `ai.opencharly.env` LABEL, while the bake reads the ENV the CANDY's `var:` emits.
+        # Measured by generating this image: the Containerfile carries
+        #     ENV STRATA_CUDA_ARCHS="75;80;86;89;120"        (the candy's default)
+        #     LABEL ai.opencharly.env='{"STRATA_CUDA_ARCHS":"89"}'   (this file's override)
+        # so the default is what ships. Recorded as a capability gap; until it is closed the engine
+        # is the fat multi-arch build. A single-card image today means copying the candy, which
+        # would violate R2, so it is deliberately not done.
+        candy:
+            # The local candy by name; its `require:` pulls the rest of the stack.
+            - strata
+
+strata-skill:
+    skill:
+        name: strata
+        family: strata
+        owner: strata
+        description: |-
+            Strata box — the Qwen3.8-Flash-Next inference engine (OpenAI/Anthropic-compatible API on
+            port 8080) on the CachyOS base, running rootless with its model store on the user's XDG
+            data directory. Use when deploying a local 125B-class model server, or when a service
+            needs an OpenAI- or Anthropic-speaking endpoint on the host.
+        content: |-
+            # strata
+
+            Strata serves **Qwen3.8-Flash-Next** — a 125B-parameter MoE — from one consumer NVIDIA
+            card plus system RAM, exposing OpenAI-, Anthropic- and Responses-compatible APIs on
+            `:8080`, so any existing client or coding agent can point at it.
+
+            ## Box Properties
+
+            | Property | Value |
+            |----------|-------|
+            | Base | cachyos (`cachyos.cachyos`, Arch-derived) |
+            | Candy | `strata` (this repo), which `require:`s `nvidia` + `cuda` + `supervisord` + `build-toolchain` |
+            | Platforms | linux/amd64 |
+            | Ports | 8080 |
+            | Volumes | `strata-data` → `/data` (the model store: weights, packs, MTP layer, config) |
+            | Secret | `STRATA_API_KEY` (required; the pod publishes the port) |
+            | Home repo | `opencharly/layer-strata` (`box/strata`) |
+
+            ## What is in the image, and what is not
+
+            The **engine is baked in** at image build, exactly the way upstream's own Dockerfile
+            compiles it, and `engine/BUILD.json` records `source: "local"` with the matching source
+            hash — which is what makes the first start reuse it instead of compiling for 20-40
+            minutes. The **weights are not in the image**: they are 37-188 GB and carry their own
+            licences (Qwen Community License 1.0 / Apache-2.0 / Swift Open License), so they either
+            download into the mounted store on the first start or arrive as a bind-mounted folder.
+
+            ## Configure it
+
+            Everything is the deployment's `env:` — the engine's own documented variables, renamed
+            by nothing:
+
+            ```yaml
+            strata:
+              pod:
+                image: strata
+                env:
+                  FAMILY: qwen          # qwen | coder | swift | unsloth | nvfp4
+                  MODEL: IQ2_XS         # the 64 GB recommendation (39.2 GB RAM+VRAM)
+                  CONTEXT: "65536"
+                  VISION: "no"          # yes adds the image encoder (~1.3 GB of VRAM)
+                  KV: k8v4
+                  GPU: "0"
+                  LOW_RAM: auto         # set `on` under any container memory cap
+                volume:
+                  - {name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}
+                port: [8080]
+                secret:
+                  - {name: STRATA_API_KEY}
+            ```
+
+            `~/.local/share/strata` is the committed default because that is `$XDG_DATA_HOME`'s
+            default; charly expands `~`/`$HOME` and **not** `$XDG_*` (`opencharly/spec#260`), so a
+            relocated `XDG_DATA_HOME` is written as a literal path. `charly config strata --bind
+            strata-data` records it per host instead.
+
+            ## Verify it
+
+            - `charly check live strata` — `/health` 200 (pre-auth by design), the key the deployment
+              supplied actually reaching the engine, the `/v1/*` gate answering **only** with that key
+              (and 401 without it), and a completion round-tripping with `reasoning_effort: none`.
+              The engine binary's self-reported version against its stamp is verified by the **GPU**
+              bed below, not here: that check runs the binary, which needs the device CDI injects.
+            - `charly check run strata.check-strata-pod` — the disposable, **GPU-free** bed: the
+              engine's scripted `--engine mock` mode proves the image, the supervised service, the
+              published port and the whole env -> config projection without a card or a model.
+            - The real-engine bed (`check-strata-gpu-pod`) needs the GPU venue and a provisioned model
+              store; it is excluded from the default roster and run on demand.
+
+            ## Related
+
+            - `/charly-ollama:ollama` — the other local inference server in the org (GPU-agnostic,
+              many small models; Strata is one large model, CUDA-only).
+            - `/charly-distros:cachyos` — the base, and `/charly-distros:nvidia` + `/charly-distros:cuda`
+              for the GPU stack this box composes.

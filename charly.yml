@@ -1,0 +1,128 @@
+# layer-strata — the Strata family: the inference-engine layer, its image, and the beds.
+#
+# The class is deliberate (umbrella `AGENTS.md`, "Repo classes and naming"): a product family is a
+# `layer-<family>` repo, never a bare name. This repo holds the candy, the image and the disposable
+# beds for Strata — the same shape as `layer-openclaw`.
+repo: github.com/opencharly/layer-strata
+import:
+    # The CachyOS image family, imported as a namespace so the box can say `base: cachyos.cachyos`.
+    # Pinned to the same tag `layer-openclaw` uses; advanced only by `charly box reconcile`.
+    - cachyos: '@github.com/opencharly/distro-cachyos:v2026.281.1001'
+discover:
+    - path: candy
+      recursive: true
+    - path: box
+      recursive: true
+
+# check-strata-pod — the family's deterministic R10 witness, and the gate for cutover 1.
+#
+# It declares NO plan of its own: every assertion it needs is baked into the `strata` candy, so a
+# second bed (or a consumer's box) inherits exactly the same probes without repeating a line (R3).
+#
+# It runs the engine's own scripted `--engine mock` mode, which needs NO GPU and NO model. That is
+# what makes this gate runnable on an ordinary build host, while the real-engine bed
+# (check-strata-gpu-pod) needs the GPU venue and a provisioned 40+ GB model store and is run on
+# demand rather than in the default roster.
+check-strata-pod:
+    pod:
+        image: strata
+        disposable: true
+        lifecycle: dev
+        description: >-
+            Sole deterministic proof that the Strata image composes, that the engine is baked and
+            stamped, that the supervised service starts and stays up, that the published port
+            answers, and that the entire env -> config -> server projection works -- all without a
+            GPU and without downloading a 37-188 GB model, because the engine ships a scripted
+            mock mode for exactly this.
+        env:
+            # The D7 posture: the scripted engine, no model, no config.
+            STRATA_ENGINE: mock
+            MODEL: IQ2_XS
+            CONTEXT: "32768"
+            VISION: "no"
+        # A real API key, so the /v1/* gate is exercised rather than absent. The candy's
+        # secret_require makes the deployment supply it; the checks read /health's `api_key`
+        # flag, which is answered before the gate, so no probe needs the secret itself.
+        secret:
+            - name: STRATA_API_KEY
+
+# check-strata-gpu-pod — the family's REAL-engine witness.
+#
+# This is the only bed that exercises the compiled engine, the page-locking path, the multi-GB
+# model load and the actual API round-trip. It therefore needs two things the deterministic bed
+# does not: the GPU venue (`requires_exclusive: [nvidia-gpu]` -> CDI, with the arbiter flipping the
+# card vfio->nvidia and back) and a PROVISIONED model store, so that a test bed never downloads
+# 37-188 GB.
+#
+# It is deliberately NOT in the default roster (operator decision, ledger §9 #8): a card-less host
+# would otherwise skip or fail this bed on every unrelated run. The umbrella's `check-all-beds`
+# excludes it; it is run on demand with `charly check run <ns>.check-strata-gpu-pod`.
+#
+# Like its sibling it declares NO plan: every assertion is the candy's.
+check-strata-gpu-pod:
+    pod:
+        image: strata
+        disposable: true
+        lifecycle: dev
+        requires_exclusive: [nvidia-gpu]
+        description: >-
+            Sole proof the REAL engine serves: the baked engine loads a provisioned model store on a
+            card that arrived through CDI, the config projection is what the deployment asked for,
+            and a completion round-trips. Needs the GPU venue; run on demand, never in the default
+            roster.
+        env:
+            FAMILY: qwen
+            MODEL: IQ2_XS
+            # 65536 is the engine's own bracket for a 14-20 GB card (the venue's RTX 4080 has 16 GB).
+            CONTEXT: "65536"
+            VISION: "no"
+            KV: k8v4
+            GPU: "0"
+            # Never `on` here: the venue has no container memory cap, and forcing the low-RAM path
+            # would test the slow engine instead of the one people deploy.
+            LOW_RAM: auto
+            # The cgroup-aware server limit, in MiB (56 GiB of the 64 GB venue).
+            STRATA_MEMORY_LIMIT_MIB: "57344"
+            # Weights that are already on the venue: the bed never downloads.
+            GGUF_DIR: /gguf
+        volume:
+            # Pre-existing GGUF files, read-write because the first start writes <shard>.done markers.
+            - {name: gguf, type: bind, host: ~/.local/share/strata/gguf/IQ2_XS, path: /gguf}
+            # The prepared pack and the MTP layer land here; both are tens of GB.
+            - {name: strata-data, path: /data}
+        secret:
+            - name: STRATA_API_KEY
+        # The projection's VALUES, asserted only here: this bed builds a real run config from the
+        # deployment's env: (the deterministic bed cannot -- its scripted engine starts with no config,
+        # so its /health reports the engine defaults and an equality assertion there could not fail).
+        # CONTEXT is deliberately 65536, NOT the engine's 32768 default, so this fails if the
+        # env -> config -> server chain ever breaks.
+        plan:
+            - check: /health reports the context this deployment asked for, not an engine default
+              id: strata-gpu-projection
+              context: [runtime]
+              exit_status: 0
+              command: >-
+                  python3 -c "import json,sys,urllib.request;
+                  h=json.load(urllib.request.urlopen('http://127.0.0.1:${HOST_PORT:8080}/health'));
+                  sys.exit(0 if str(h.get('max_context'))=='${CONTEXT}' else 1)"
+            - check: "the engine binary reports the version its stamp records (a stamp can lie -- upstream #2054)"
+              id: strata-gpu-engine-version
+              context: [runtime]
+              exit_status: 0
+              # Lives HERE, not in the candy: the binary loads libcuda, which CDI injects only at
+              # runtime on a device-bearing host. It is the check that catches a stamp written over a
+              # failed build -- exactly what upstream #2054 measured -- and it can only run where the
+              # engine can actually load.
+              command: >-
+                  python3 -c "import json,subprocess,sys; m=json.load(open('/opt/strata/engine/BUILD.json'));
+                  out=subprocess.run(['/opt/strata/engine/strata','--version'],capture_output=True,text=True).stdout;
+                  sys.exit(0 if str(m.get('version','')) in out else 1)"
+            - check: and the vision flag the deployment asked for
+              id: strata-gpu-vision
+              context: [runtime]
+              exit_status: 0
+              command: >-
+                  python3 -c "import json,sys,urllib.request;
+                  h=json.load(urllib.request.urlopen('http://127.0.0.1:${HOST_PORT:8080}/health'));
+                  sys.exit(0 if bool(h.get('images')) == ('${VISION}'=='yes') else 1)"

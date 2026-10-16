@@ -1,0 +1,10 @@
+.build/
+*.log
+__pycache__/
+*.pyc
+
+# Generated context-ignore files (podman reads .containerignore, docker .dockerignore).
+# The org-wide convention is to ignore them, not commit them: layer-openclaw and
+# distro-fedora carry the identical three lines.
+.containerignore
+.dockerignore
