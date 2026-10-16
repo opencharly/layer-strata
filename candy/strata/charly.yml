@@ -43,7 +43,10 @@ strata:
             # declaration: Strata has NO CPU-only mode and its engine is compiled with
             # -DSTRATA_ENABLE_CUDA=ON, so nvcc is a BUILD-time requirement (ledger D4).
             - '@github.com/opencharly/layer-nvidia:v2026.289.1301'
-            - '@github.com/opencharly/layer-cuda:v2026.289.1250'
+            # Bumped v2026.289.1250 -> v2026.289.1454: the Arch header-root fix that makes this
+            # family buildable at all (opencharly/layer-cuda#9, fixed by #10, merged 14:54:37Z and
+            # tagged by tag-on-merge). Producer-first: the tag existed before this pin moved.
+            - '@github.com/opencharly/layer-cuda:v2026.289.1454'
             # NOTE -- distro-cachyos is deliberately NOT bumped to its newest tag (v2026.289.0901), even
             # though a newer one exists in the BOX's import below. Part II #3 requires every `distro-*` pin
             # to equal CHARLY's own gitlink, and charly's gitlink (673b1b6b90ab) resolves exactly to
