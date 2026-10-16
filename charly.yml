@@ -4,17 +4,6 @@
 # `layer-<family>` repo, never a bare name. This repo holds the candy, the image and the disposable
 # beds for Strata — the same shape as `layer-openclaw`.
 repo: github.com/opencharly/layer-strata
-# The org registry. Without it the BUILD tags the image `localhost/strata:<check-tag>` while the pod
-# deploy resolves `ghcr.io/opencharly/strata:<check-tag>` — so the deploy cannot see the image the build
-# just produced and tries to pull it instead:
-#
-#   charly config: unable to copy from source docker://ghcr.io/opencharly/strata:check-strata-pod-…
-#
-# Measured on a full bed run (image-build PASS 17m7s, check-image PASS, deploy-add PASS, then config FAIL).
-# Invisible to `box validate`, to `box generate`, to the image build and to all thirty-nine image checks:
-# every one of them works on the locally-tagged artifact, and only the deploy compares the built identity
-# with the deployed one. Declared exactly as the working sibling repos declare it.
-registry: ghcr.io/opencharly
 import:
     # The CachyOS image family, imported as a namespace so the box can say `base: cachyos.cachyos`.
     # Pinned to the same tag `layer-openclaw` uses; advanced only by `charly box reconcile`.
