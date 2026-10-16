@@ -16,15 +16,15 @@ defaults:
     # docker://ghcr.io/opencharly/strata:check-strata-pod-…`). Invisible to `box validate`, to `box
     # generate`, to the image build and to all thirty-nine image checks: every one of them works on the
     # locally-tagged artifact, and only the deploy compares the built identity with the deployed one.
-    # Per-run image tagging, declared exactly as the sibling family repos declare it
-    # (`layer-openclaw`: `defaults: {tag: auto, registry: ghcr.io/opencharly}`). Without it the per-run
-    # check tag the deploy resolves is not the one the build writes, and the deploy cannot see the
-    # freshly built image: `plugin-deploy-pod deploy-name alias tag (check-strata-pod): Error:
-    # strata: image not known`. Found by diffing my manifest against a WORKING sibling's, after three
-    # read-tested hypotheses died (stale inventory: no listing happens at all; identity mismatch: the
-    # names match exactly; bare-alias bed form: the sibling's bed uses the bare alias too).
+    # Declared to parity with the working sibling family repo (`layer-openclaw`), which is what the
+    # comparison keeps proving: `platform: [linux/amd64]` + a pac-based build. Its `builder:` block is
+    # deliberately NOT copied — that selects pixi/npm multi-stage builders this box does not use.
+    platform:
+        - linux/amd64
     tag: auto
     registry: ghcr.io/opencharly
+    build:
+        - pac
 import:
     # The CachyOS image family, imported as a namespace so the box can say `base: cachyos.cachyos`.
     # Pinned to the same tag `layer-openclaw` uses; advanced only by `charly box reconcile`.
