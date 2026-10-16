@@ -42,7 +42,7 @@ strata:
             # The GPU stack is intrinsic, unlike the `ollama` candy's deliberately GPU-agnostic
             # declaration: Strata has NO CPU-only mode and its engine is compiled with
             # -DSTRATA_ENABLE_CUDA=ON, so nvcc is a BUILD-time requirement (ledger D4).
-            - '@github.com/opencharly/layer-nvidia:v2026.289.1301'
+            - '@github.com/opencharly/layer-nvidia:054aa7702ebe79e8be444764f91a03933ba45eec'
             # Bumped v2026.289.1250 -> v2026.289.1454 -> v2026.289.1504. Two producer fixes, both
             # required before this family can build at all: #9's header-root/subtree/extension repair
             # (layer-cuda#10, tag v2026.289.1454) and nvcc's missing sibling tree /usr/nvvm, without
