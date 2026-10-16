@@ -61,6 +61,21 @@ def main() -> int:
 
     llama = setup.get_llama_cpp()          # the pinned LLAMA_CPP_COMMIT, fetched into third_party/
     nvcc, _ = setup.find_nvcc()            # the toolkit the locked CachyOS base provides
+    # Hand CMake the toolkit's REAL compiler binary, not the stitched one.
+    #
+    # CMake derives the CUDA toolkit ROOT from the COMPILER'S PATH, then passes that root's include
+    # directory as `-isystem` *before* the C++ standard include directory. The `cuda` candy stitches
+    # the toolkit into /usr, so resolving nvcc through the stitched path made the derived root `/usr`
+    # and CMake emitted `-isystem /usr/include` -- the very directory that holds glibc's `math.h`.
+    # `cmath` pulls that header in with `#include_next`, which means "resume searching AFTER the
+    # directory you found me in"; /usr/include had already been passed, so `math.h` became
+    # unreachable and every CUDA compile died with
+    # `/usr/include/c++/16/cmath:55:15: fatal error: math.h: No such file or directory`.
+    # The real path keeps the canonical /usr identity for consumers while making the derived root
+    # /opt/cuda, whose include dir collides with nothing.
+    _real_nvcc = pathlib.Path("/opt/cuda/bin/nvcc")
+    if _real_nvcc.is_file():
+        nvcc = str(_real_nvcc)
     print(f"[charly] llama.cpp at {llama}; nvcc at {nvcc}", flush=True)
 
     setup.cmake_build(
