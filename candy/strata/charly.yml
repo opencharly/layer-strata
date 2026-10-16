@@ -149,11 +149,23 @@ strata:
               restart: always
               enable: true
         plan:
-            - run: fetch the pinned Strata source tree
-              download: "https://github.com/Niko1221/Strata/archive/refs/tags/${STRATA_VERSION}.tar.gz"
-              extract: tar.gz
-              to: /opt/strata
-              strip_components: 1
+            # Fetch with GIT METADATA, not as a tarball.
+            #
+            # Upstream's Dockerfile clones the repo, and the bake queries the tree's own git metadata
+            # (that is where the ggml commit comes from). A tarball has no `.git`, so `ggml commit:`
+            # resolved to "unknown" and the queries emitted
+            # `fatal: not a git repository (or any of the parent directories): .git`
+            # into the build log -- twice -- which the zero-error-line rule correctly counts as a gate
+            # failure (R10, zero warnings). Cloning as upstream does removes both symptoms by
+            # construction instead of suppressing the message, and keeps this candy faithful to D6
+            # ("the engine baked exactly as upstream's Dockerfile does"). Measured: the image-build step
+            # itself exited 0 after 18m22s with these two lines the only thing standing between it and a
+            # pass.
+            - run: fetch the pinned Strata source tree, git metadata included
+              command: |
+                rm -rf /opt/strata
+                git clone --quiet --branch "${STRATA_VERSION}" --depth 1 \
+                  https://github.com/Niko1221/Strata /opt/strata
               run_as: root
             - run: install the engine-bake script (upstream's own setup.py functions)
               copy: charly-build-engine.py
