@@ -48,7 +48,7 @@ strata:
             # (layer-cuda#10, tag v2026.289.1454) and nvcc's missing sibling tree /usr/nvvm, without
             # which the backend compiler is not found (layer-cuda#11, tag v2026.289.1504).
             # Producer-first: every tag existed before this pin moved.
-            - '@github.com/opencharly/layer-cuda:v2026.289.1504'
+            - '@github.com/opencharly/layer-cuda:1796937ae9ef48539015889eff9286bca9f165f0'
             # NOTE -- distro-cachyos is deliberately NOT bumped to its newest tag (v2026.289.0901), even
             # though a newer one exists in the BOX's import below. Part II #3 requires every `distro-*` pin
             # to equal CHARLY's own gitlink, and charly's gitlink (673b1b6b90ab) resolves exactly to
