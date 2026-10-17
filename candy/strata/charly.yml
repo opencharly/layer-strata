@@ -369,7 +369,10 @@ strata-layer-skill:
             ## Related
 
             - `/charly-strata:strata` — the BOX (this layer on the CachyOS base).
-            - `/charly-strata:strata` (plugin) — `charly strata`, the host-side management CLI.
+            - `charly strata` — the host-side management CLI, shipped by the out-of-tree
+              `opencharly/plugin-strata` command plugin. That plugin owns no `skill:` entity, so it has
+              no `/family:skill` ref of its own; naming it here in prose avoids colliding with the box's
+              ref above.
             - `/charly-ollama:ollama-layer` — the other local inference server in the org; it is
               GPU-agnostic and serves many small models, while this one is CUDA-only and serves one
               large one.
