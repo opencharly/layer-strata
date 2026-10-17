@@ -28,7 +28,7 @@ defaults:
 import:
     # The CachyOS image family, imported as a namespace so the box can say `base: cachyos.cachyos`.
     # Pinned to the same tag `layer-openclaw` uses; advanced only by `charly box reconcile`.
-    - cachyos: '@github.com/opencharly/distro-cachyos:v2026.281.1001'
+    - cachyos: '@github.com/opencharly/distro-cachyos:v2026.290.2137'
 discover:
     - path: candy
       recursive: true
