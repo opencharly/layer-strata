@@ -71,7 +71,7 @@ check-strata-pod:
 #
 # This is the only bed that exercises the compiled engine, the page-locking path, the multi-GB
 # model load and the actual API round-trip. It therefore needs two things the deterministic bed
-# does not: the GPU venue (`requires_exclusive: [nvidia-gpu]` -> CDI, with the arbiter flipping the
+# does not: the GPU venue (`requires_shared: [nvidia-gpu]` -> CDI, with the arbiter flipping the
 # card vfio->nvidia and back) and a PROVISIONED model store, so that a test bed never downloads
 # 37-188 GB.
 #
@@ -85,7 +85,12 @@ check-strata-gpu-pod:
         image: strata
         disposable: true
         lifecycle: dev
-        requires_exclusive: [nvidia-gpu]
+        # A GPU-CDI POD claims the REFCOUNTED axis: requires_shared flips the IOMMU group
+        # vfio->nvidia+CDI at this bed's deploy and back only when the LAST claimant
+        # releases. requires_exclusive is the VM/sole-use axis and asks for the flip TO
+        # vfio -- measured 2026-10-17: declaring it on this pod made the arbiter try a
+        # vfio switch, which a live desktop session (Hyprland) correctly refused.
+        requires_shared: [nvidia-gpu]
         description: >-
             Sole proof the REAL engine serves: the baked engine loads a provisioned model store on a
             card that arrived through CDI, the config projection is what the deployment asked for,
