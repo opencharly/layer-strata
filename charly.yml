@@ -113,6 +113,11 @@ check-strata-gpu-pod:
             - {name: strata-data, path: /data}
         secret:
             - name: STRATA_API_KEY
+        # VENUE PRECONDITION (measured 2026-10-17): this bed names a specific venue and NEVER downloads.
+        # `GGUF_DIR: /gguf` binds `~/.local/share/strata/gguf/IQ2_XS`, and the weights must already be there;
+        # the ledger names the venue (`cachyos-gpu-workstation-vm`: 64G/12cpu/1T, RTX 40 -> arch 89). A host
+        # with the matching card but no staged GGUF — host `a` has an RTX 4080 SUPER and an empty store —
+        # cannot run it. Stating it here because "run on demand" otherwise reads as "runnable anywhere".
         # The projection's VALUES, asserted only here: this bed builds a real run config from the
         # deployment's env: (the deterministic bed cannot -- its scripted engine starts with no config,
         # so its /health reports the engine defaults and an equality assertion there could not fail).
