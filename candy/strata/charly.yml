@@ -48,7 +48,7 @@ strata:
             # (layer-cuda#10, tag v2026.289.1454) and nvcc's missing sibling tree /usr/nvvm, without
             # which the backend compiler is not found (layer-cuda#11, tag v2026.289.1504).
             # Producer-first: every tag existed before this pin moved.
-            - '@github.com/opencharly/layer-cuda:1796937ae9ef48539015889eff9286bca9f165f0'
+            - '@github.com/opencharly/layer-cuda:d075bd36ef566ef2783a84c1a96eea0e300f6469'
             # NOTE -- distro-cachyos is deliberately NOT bumped to its newest tag (v2026.289.0901), even
             # though a newer one exists in the BOX's import below. Part II #3 requires every `distro-*` pin
             # to equal CHARLY's own gitlink, and charly's gitlink (673b1b6b90ab) resolves exactly to
@@ -145,7 +145,10 @@ strata:
               exec: /opt/strata/charly-entrypoint.sh
               # NOT supervisord's 10 s default: the engine releases tens of GB of page-locked RAM
               # on SIGTERM, and a too-early SIGKILL leaves stale VRAM and a wedged GPU hand-off.
-              stop_timeout: 90s
+              # Integer form, and a MASK: the schema also permits "90s", but charly writes the
+              # value verbatim into supervisord's stopwaitsecs, which parses an int - so the
+              # duration form kills the service (ledger §89; filed against charly).
+              stop_timeout: 90
               restart: always
               enable: true
         plan:
@@ -281,7 +284,7 @@ strata:
               # env -> config -> server chain is provable.
               command: >-
                   python3 -c "import json,os,sys,urllib.request;
-                  h=json.load(urllib.request.urlopen('http://127.0.0.1:${HOST_PORT:8080}/health'));
+                  h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
                   fields=('max_context','images','model');
                   sys.exit(0 if h.get('status')=='ok' and h.get('api_key') is True
                              and all(f in h for f in fields) else 1)"
@@ -291,7 +294,7 @@ strata:
               exit_status: 0
               command: >-
                   python3 -c "import json,os,sys,urllib.request;
-                  r=urllib.request.Request('http://127.0.0.1:${HOST_PORT:8080}/v1/models',headers={'Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
+                  r=urllib.request.Request('http://127.0.0.1:8080/v1/models',headers={'Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
                   sys.exit(0 if json.load(urllib.request.urlopen(r)).get('data') else 1)"
             - check: "and it is CLOSED without one -- a negative control, 401 rather than 200"
               id: strata-api-gate-closed
@@ -305,6 +308,14 @@ strata:
               id: strata-completion
               context: [runtime]
               exit_status: 0
+              # The engine loads ~64 GB of weights after the server starts listening, so the first
+              # completion can wait longer than any per-request timeout. `eventually` is the
+              # documented poll-until-pass matcher (verb catalog, "Step fields"), not a sleep: the
+              # FIRST pass returns immediately, and a failure reports its attempt count and elapsed
+              # time rather than a bare timeout. Measured: check-live took 41s in the failing run
+              # versus 10s once the load had been given room.
+              eventually: "300s"
+              retry_interval: "5s"
               # Two measured traps sit behind this probe, either of which would make it assert
               # nothing: the engine defaults to thinking, and a small max_tokens truncates the
               # answer to `content: null` with finish_reason "length" (measured at 16 tokens).
@@ -313,7 +324,7 @@ strata:
               command: >-
                   python3 -c "import json,os,sys,urllib.request;
                   body=json.dumps({'model':'strata','messages':[{'role':'user','content':'say hi'}],'max_tokens':64,'reasoning_effort':'none'}).encode();
-                  r=urllib.request.Request('http://127.0.0.1:${HOST_PORT:8080}/v1/chat/completions',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
+                  r=urllib.request.Request('http://127.0.0.1:8080/v1/chat/completions',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
                   c=json.load(urllib.request.urlopen(r))['choices'][0];
                   sys.exit(0 if c['message'].get('content') and c.get('finish_reason')=='stop' else 1)"
 

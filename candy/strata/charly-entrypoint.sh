@@ -59,7 +59,17 @@ cfg="$STRATA_DATA/config/strata-$tag.json"
 link="/opt/strata/strata-$tag.json"
 mkdir -p "$STRATA_DATA/config"
 
-# --- the install pass: upstream's argv verbatim, only when it is needed ----------------------
+# --- seed the baked config BEFORE deciding whether to install --------------------------------
+# The image is baked, so the config it needs must be baked too ($link is that path). Without this
+# the condition below is true on every fresh volume -- the volume is empty by definition at first
+# start -- so a baked image re-runs the installer at every launch, and in a rootless container the
+# installer cannot write into /opt/strata/.venv: measured on the GPU bed as
+#   PermissionError: '/opt/strata/.venv/.strata-pip.json' -> supervisord FATAL -> no listener.
+if [ ! -f "$cfg" ] && [ -f "$link" ]; then
+    cp -f "$link" "$cfg" && echo "[charly] config seeded from the baked image: $cfg" >&2
+fi
+
+# --- the install pass: upstream's argv verbatim, only when it is genuinely needed ------------
 if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
     if [ -n "${GGUF_DIR:-}" ]; then
         echo "[charly] setting up $tag from the GGUF files in $GGUF_DIR (the engine is in the image)" >&2
@@ -108,16 +118,23 @@ if [ -f "$cfg" ]; then
 fi
 
 # --- re-assert the documented invariant (#1244) ----------------------------------------------
-# The server must start from a symlink INTO the volume. At the version we pin a config write
-# replaces that link with a regular file in the image (upstream #2547, unmerged), so a settings
-# pass can break it; restoring it honours a stated invariant rather than working around a defect.
-if [ -f "$cfg" ]; then
+# The launch below passes --config "$cfg" explicitly, so the server does not read this link. It is
+# kept for a settings pass that resolves the image-baked name instead of the volume path.
+# /opt/strata is read-only at runtime, measured on the GPU bed:
+#     ln: failed to create symbolic link '/opt/strata/strata-iq2_xs.json': Permission denied
+# so the invariant is re-asserted only where the image allows it. That is a filesystem property
+# test, not a suppressed error: on a writable layer the link is still restored.
+if [ -f "$cfg" ] && [ -w "$(dirname "$link")" ]; then
     ln -sfn "$cfg" "$link"
 fi
 
-# --- launch: the card pins are repeated on purpose (they pin the cards for this model) -------
-set -- --port "$PORT"
-if [ -n "${GPUS:-}" ]; then set -- "$@" --gpus "$GPUS"; fi
-if [ -n "${GPU:-}" ]; then set -- "$@" --gpu "$GPU"; fi
-if [ -n "${LAYER_SPLIT:-}" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
-exec .venv/bin/python setup.py "$@"
+# --- launch -----------------------------------------------------------------------------------
+# Serve directly instead of re-entering setup.py. Upstream's setup "installs everything and starts
+# the model", but every LATER start "skips straight to running the model" -- which is serve/server.py,
+# the invocation run-<model>.sh itself execs. The image is already baked (setup ran at build time), so
+# re-entering the installer only buys its preamble: measured on the GPU bed, the checks asked for
+# /health 11 s after start while setup was still preparing, and got "connection refused" five times.
+# The card pins belong in the config ($cfg, assembled above), not on a command line: server.py does
+# not accept --gpus/--gpu/--layer-split.
+exec .venv/bin/python serve/server.py --engine strata --config "$cfg" \
+    --host "$HOST" --port "$PORT" --api-key "$API_KEY"

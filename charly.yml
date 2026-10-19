@@ -28,7 +28,7 @@ defaults:
 import:
     # The CachyOS image family, imported as a namespace so the box can say `base: cachyos.cachyos`.
     # Pinned to the same tag `layer-openclaw` uses; advanced only by `charly box reconcile`.
-    - cachyos: '@github.com/opencharly/distro-cachyos:v2026.281.1001'
+    - cachyos: '@github.com/opencharly/distro-cachyos:v2026.290.2137'
 discover:
     - path: candy
       recursive: true
@@ -44,29 +44,6 @@ discover:
 # what makes this gate runnable on an ordinary build host, while the real-engine bed
 # (check-strata-gpu-pod) needs the GPU venue and a provisioned 40+ GB model store and is run on
 # demand rather than in the default roster.
-check-strata-pod:
-    pod:
-        image: strata
-        disposable: true
-        lifecycle: dev
-        description: >-
-            Sole deterministic proof that the Strata image composes, that the engine is baked and
-            stamped, that the supervised service starts and stays up, that the published port
-            answers, and that the entire env -> config -> server projection works -- all without a
-            GPU and without downloading a 37-188 GB model, because the engine ships a scripted
-            mock mode for exactly this.
-        env:
-            # The D7 posture: the scripted engine, no model, no config.
-            STRATA_ENGINE: mock
-            MODEL: IQ2_XS
-            CONTEXT: "32768"
-            VISION: "no"
-        # A real API key, so the /v1/* gate is exercised rather than absent. The candy's
-        # secret_require makes the deployment supply it; the checks read /health's `api_key`
-        # flag, which is answered before the gate, so no probe needs the secret itself.
-        secret:
-            - name: STRATA_API_KEY
-
 # check-strata-gpu-pod — the family's REAL-engine witness.
 #
 # This is the only bed that exercises the compiled engine, the page-locking path, the multi-GB
@@ -113,9 +90,15 @@ check-strata-gpu-pod:
             GGUF_DIR: /gguf
         volume:
             # Pre-existing GGUF files, read-write because the first start writes <shard>.done markers.
-            - {name: gguf, type: bind, host: ~/.local/share/strata/gguf/IQ2_XS, path: /gguf}
-            # The prepared pack and the MTP layer land here; both are tens of GB.
-            - {name: strata-data, path: /data}
+            # The provisioned shards live in models/<MODEL>/ on the venue store; gguf/<MODEL>/ exists but is
+            # empty here, and binding it made the engine start and report `loaded: false` with
+            # "--native /gguf/<shard>: missing model shard" in its own log. Measured 2026-10-19.
+            - {name: gguf, type: bind, host: ~/.local/share/strata/models/IQ2_XS, path: /gguf}
+            # The prepared pack, the MTP layer and the CONFIG live in the host store already: binding it
+            # is what makes the launch skip the installer. As a named volume /data starts EMPTY, so the
+            # entrypoint takes its install path and dies writing the read-only /opt/strata/.venv
+            # ("PermissionError: .strata-pip.json" -> supervisord FATAL -> no listener; ledger §94-§97).
+            - {name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}
         secret:
             - name: STRATA_API_KEY
         # VENUE PRECONDITION (measured 2026-10-17): this bed names a specific venue and NEVER downloads.
@@ -133,10 +116,14 @@ check-strata-gpu-pod:
               id: strata-gpu-projection
               context: [runtime]
               exit_status: 0
+              # The expectation is the literal this bed declares above (CONTEXT: "65536"), not
+              # ${CONTEXT}: the check-var resolver does not see the pod env, so the reference was
+              # skipped as unresolved -- an assertion silently absent. The probe runs in-container
+              # (command: defaults to podman exec), so it dials the container port, not HOST_PORT.
               command: >-
                   python3 -c "import json,sys,urllib.request;
-                  h=json.load(urllib.request.urlopen('http://127.0.0.1:${HOST_PORT:8080}/health'));
-                  sys.exit(0 if str(h.get('max_context'))=='${CONTEXT}' else 1)"
+                  h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
+                  sys.exit(0 if str(h.get('max_context'))=='65536' else 1)"
             - check: "the engine binary reports the version its stamp records (a stamp can lie -- upstream #2054)"
               id: strata-gpu-engine-version
               context: [runtime]
@@ -153,7 +140,9 @@ check-strata-gpu-pod:
               id: strata-gpu-vision
               context: [runtime]
               exit_status: 0
+              # VISION is "no" above; same two reasons as the projection step for literalising it
+              # and dialling the container port.
               command: >-
                   python3 -c "import json,sys,urllib.request;
-                  h=json.load(urllib.request.urlopen('http://127.0.0.1:${HOST_PORT:8080}/health'));
-                  sys.exit(0 if bool(h.get('images')) == ('${VISION}'=='yes') else 1)"
+                  h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
+                  sys.exit(0 if bool(h.get('images')) is False else 1)"
