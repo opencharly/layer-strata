@@ -167,8 +167,16 @@ strata:
             - run: fetch the pinned Strata source tree, git metadata included
               command: |
                 rm -rf /opt/strata
-                git clone --quiet --branch "${STRATA_VERSION}" --depth 1 \
+                # Pin the release commit WITHOUT git's annotated-tag warning. `--branch <tag>` hands git
+                # the TAG OBJECT's oid and lookup_commit_or_die() warns that it is not a commit before
+                # peeling it (git commit.c:84-91), which the build's severity-prefix recognizer counts:
+                #   warning: refs/tags/v0.1.44.1 9791ea33... is not a commit!
+                # Fetching the tag ref and checking out FETCH_HEAD lands the same peeled commit with no
+                # such line, so a cache-cold rebuild can report warnings=0.
+                git clone --quiet --depth 1 --no-single-branch \
                   https://github.com/Niko1221/Strata /opt/strata
+                git -C /opt/strata fetch --quiet --depth 1 origin "refs/tags/${STRATA_VERSION}"
+                git -C /opt/strata checkout -q FETCH_HEAD
               run_as: root
             - run: install the engine-bake script (upstream's own setup.py functions)
               copy: charly-build-engine.py
