@@ -41,7 +41,7 @@ this repo. `README.md` is the user overview and never carries agent guidance.
 - `charly box validate` at the repo root — the structural check and the change class's pre-flight.
 - `charly box generate strata` — inspect the emitted Containerfile. The plan steps and their OCI
   labels are the artifact the validator reads, so **read them** rather than trusting the source.
-- The gate for a change here is `charly check run check-strata-pod` — the deterministic, GPU-free bed
+- The gate for a change here is `charly check run check-strata-gpu-pod` — the GPU bed (the GPU-free mock mode is a runtime posture, not a bed)
   (the engine's scripted `--engine mock` mode: no card, no model). It needs the **image**, so it
   needs a host that can build one; `check-strata-gpu-pod` is the real-engine bed, needs the GPU venue
   and a provisioned model store, and is run on demand rather than in the default roster.
