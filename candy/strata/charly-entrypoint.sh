@@ -118,10 +118,13 @@ if [ -f "$cfg" ]; then
 fi
 
 # --- re-assert the documented invariant (#1244) ----------------------------------------------
-# The server must start from a symlink INTO the volume. At the version we pin a config write
-# replaces that link with a regular file in the image (upstream #2547, unmerged), so a settings
-# pass can break it; restoring it honours a stated invariant rather than working around a defect.
-if [ -f "$cfg" ]; then
+# The launch below passes --config "$cfg" explicitly, so the server does not read this link. It is
+# kept for a settings pass that resolves the image-baked name instead of the volume path.
+# /opt/strata is read-only at runtime, measured on the GPU bed:
+#     ln: failed to create symbolic link '/opt/strata/strata-iq2_xs.json': Permission denied
+# so the invariant is re-asserted only where the image allows it. That is a filesystem property
+# test, not a suppressed error: on a writable layer the link is still restored.
+if [ -f "$cfg" ] && [ -w "$(dirname "$link")" ]; then
     ln -sfn "$cfg" "$link"
 fi
 
