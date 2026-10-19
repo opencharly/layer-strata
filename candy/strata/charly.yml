@@ -136,8 +136,9 @@ strata:
             # OPTIONAL by contract: a LOCAL strata deployment runs with no API key and therefore
             # serves /v1/* openly. Set one only when the endpoint is reachable by someone else
             # (a published host port on a shared network); the entrypoint projects this ENV name
-            # to the `API_KEY` name upstream's contract reads, and an unset/empty value makes the
-            # engine start with `--api-key ""` — no auth, which is the local default.
+            # to the `API_KEY` name upstream's contract reads. An unset value means the entrypoint
+            # passes NO `--api-key` flag at all — the engine REJECTS an empty one ("an API key was
+            # given but it is empty"), so omitting the flag is what "no auth" actually requires.
             - name: STRATA_API_KEY
               description: >-
                   OPTIONAL Bearer / x-api-key token for /v1/*. Unset by default so a local pod
