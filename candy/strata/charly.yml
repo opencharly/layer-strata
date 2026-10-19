@@ -284,7 +284,7 @@ strata:
               # env -> config -> server chain is provable.
               command: >-
                   python3 -c "import json,os,sys,urllib.request;
-                  h=json.load(urllib.request.urlopen('http://127.0.0.1:${PORT:8080}/health'));
+                  h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
                   fields=('max_context','images','model');
                   sys.exit(0 if h.get('status')=='ok' and h.get('api_key') is True
                              and all(f in h for f in fields) else 1)"
@@ -294,7 +294,7 @@ strata:
               exit_status: 0
               command: >-
                   python3 -c "import json,os,sys,urllib.request;
-                  r=urllib.request.Request('http://127.0.0.1:${PORT:8080}/v1/models',headers={'Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
+                  r=urllib.request.Request('http://127.0.0.1:8080/v1/models',headers={'Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
                   sys.exit(0 if json.load(urllib.request.urlopen(r)).get('data') else 1)"
             - check: "and it is CLOSED without one -- a negative control, 401 rather than 200"
               id: strata-api-gate-closed
@@ -316,7 +316,7 @@ strata:
               command: >-
                   python3 -c "import json,os,sys,urllib.request;
                   body=json.dumps({'model':'strata','messages':[{'role':'user','content':'say hi'}],'max_tokens':64,'reasoning_effort':'none'}).encode();
-                  r=urllib.request.Request('http://127.0.0.1:${PORT:8080}/v1/chat/completions',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
+                  r=urllib.request.Request('http://127.0.0.1:8080/v1/chat/completions',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
                   c=json.load(urllib.request.urlopen(r))['choices'][0];
                   sys.exit(0 if c['message'].get('content') and c.get('finish_reason')=='stop' else 1)"
 
