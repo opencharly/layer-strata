@@ -91,8 +91,11 @@ check-strata-gpu-pod:
         volume:
             # Pre-existing GGUF files, read-write because the first start writes <shard>.done markers.
             - {name: gguf, type: bind, host: ~/.local/share/strata/gguf/IQ2_XS, path: /gguf}
-            # The prepared pack and the MTP layer land here; both are tens of GB.
-            - {name: strata-data, path: /data}
+            # The prepared pack, the MTP layer and the CONFIG live in the host store already: binding it
+            # is what makes the launch skip the installer. As a named volume /data starts EMPTY, so the
+            # entrypoint takes its install path and dies writing the read-only /opt/strata/.venv
+            # ("PermissionError: .strata-pip.json" -> supervisord FATAL -> no listener; ledger §94-§97).
+            - {name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}
         secret:
             - name: STRATA_API_KEY
         # VENUE PRECONDITION (measured 2026-10-17): this bed names a specific venue and NEVER downloads.
