@@ -333,6 +333,16 @@ strata-layer-skill:
         name: strata-layer
         family: strata
         owner: strata
+        # R0-dispatcher trigger phrases: without these the skill is indexed in the marketplace
+        # corpus but never gets a row in the generated dispatcher table, so nothing routes to it
+        # (measured: grep -c triggers on both strata skill entities was 0, and
+        # marketplace/DISPATCHER.md carried no strata row on main).
+        triggers:
+            - strata
+            - strata layer
+            - Qwen3.8-Flash-Next
+            - local inference server
+        category: images
         description: |-
             The `strata` LAYER — the engine itself: baked from the pinned upstream tag, with the
             setup-choice surface, the rootless XDG model store, the supervised service and the
