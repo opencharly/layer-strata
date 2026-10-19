@@ -115,9 +115,17 @@ if [ -f "$cfg" ]; then
     ln -sfn "$cfg" "$link"
 fi
 
-# --- launch: the card pins are repeated on purpose (they pin the cards for this model) -------
+# --- launch -----------------------------------------------------------------------------------
+# Serve directly instead of re-entering setup.py. Upstream's setup "installs everything and starts
+# the model", but every LATER start "skips straight to running the model" -- which is serve/server.py,
+# the invocation run-<model>.sh itself execs. The image is already baked (setup ran at build time), so
+# re-entering the installer only buys its preamble: measured on the GPU bed, the checks asked for
+# /health 11 s after start while setup was still preparing, and got "connection refused" five times.
+# The card pins belong in the config ($cfg, assembled above), not on a command line: server.py does
+# not accept --gpus/--gpu/--layer-split.
 set -- --port "$PORT"
 if [ -n "${GPUS:-}" ]; then set -- "$@" --gpus "$GPUS"; fi
 if [ -n "${GPU:-}" ]; then set -- "$@" --gpu "$GPU"; fi
 if [ -n "${LAYER_SPLIT:-}" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
-exec .venv/bin/python setup.py "$@"
+exec .venv/bin/python serve/server.py --engine strata --config "$cfg" \
+    --host "$HOST" --port "$PORT" --api-key "$API_KEY"
