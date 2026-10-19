@@ -90,7 +90,10 @@ check-strata-gpu-pod:
             GGUF_DIR: /gguf
         volume:
             # Pre-existing GGUF files, read-write because the first start writes <shard>.done markers.
-            - {name: gguf, type: bind, host: ~/.local/share/strata/gguf/IQ2_XS, path: /gguf}
+            # The provisioned shards live in models/<MODEL>/ on the venue store; gguf/<MODEL>/ exists but is
+            # empty here, and binding it made the engine start and report `loaded: false` with
+            # "--native /gguf/<shard>: missing model shard" in its own log. Measured 2026-10-19.
+            - {name: gguf, type: bind, host: ~/.local/share/strata/models/IQ2_XS, path: /gguf}
             # The prepared pack, the MTP layer and the CONFIG live in the host store already: binding it
             # is what makes the launch skip the installer. As a named volume /data starts EMPTY, so the
             # entrypoint takes its install path and dies writing the read-only /opt/strata/.venv
