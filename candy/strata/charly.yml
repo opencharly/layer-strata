@@ -167,12 +167,13 @@ strata:
             - run: fetch the pinned Strata source tree, git metadata included
               command: |
                 rm -rf /opt/strata
-                # Pin the release commit WITHOUT git's annotated-tag warning. `--branch <tag>` hands git
-                # the TAG OBJECT's oid and lookup_commit_or_die() warns that it is not a commit before
-                # peeling it (git commit.c:84-91), which the build's severity-prefix recognizer counts:
-                #   warning: refs/tags/v0.1.44.1 9791ea33... is not a commit!
-                # Fetching the tag ref and checking out FETCH_HEAD lands the same peeled commit with no
-                # such line, so a cache-cold rebuild can report warnings=0.
+                # Pin the release commit by fetching the tag REF and checking out FETCH_HEAD, rather than
+                # with `clone --branch <tag>`. Upstream's release tags are ANNOTATED, so --branch hands git the
+                # tag object's id and git warns while peeling it to the commit (git commit.c
+                # lookup_commit_or_die); the build's severity-prefix recognizer counts that line, so a
+                # cache-cold rebuild could never report warnings=0. Both forms land the same peeled commit;
+                # this one emits no diagnostic. The exact warning text is deliberately NOT quoted here,
+                # because plan comments reach the OCI description label.
                 git clone --quiet --depth 1 --no-single-branch \
                   https://github.com/Niko1221/Strata /opt/strata
                 git -C /opt/strata fetch --quiet --depth 1 origin "refs/tags/${STRATA_VERSION}"
