@@ -167,8 +167,17 @@ strata:
             - run: fetch the pinned Strata source tree, git metadata included
               command: |
                 rm -rf /opt/strata
-                git clone --quiet --branch "${STRATA_VERSION}" --depth 1 \
+                # Pin the release commit by fetching the tag REF and checking out FETCH_HEAD, rather than
+                # with `clone --branch <tag>`. Upstream's release tags are ANNOTATED, so --branch hands git the
+                # tag object's id and git warns while peeling it to the commit (git commit.c
+                # lookup_commit_or_die); the build's severity-prefix recognizer counts that line, so a
+                # cache-cold rebuild could never report warnings=0. Both forms land the same peeled commit;
+                # this one emits no diagnostic. The exact warning text is deliberately NOT quoted here,
+                # because plan comments reach the OCI description label.
+                git clone --quiet --depth 1 --no-single-branch \
                   https://github.com/Niko1221/Strata /opt/strata
+                git -C /opt/strata fetch --quiet --depth 1 origin "refs/tags/${STRATA_VERSION}"
+                git -C /opt/strata checkout -q FETCH_HEAD
               run_as: root
             - run: install the engine-bake script (upstream's own setup.py functions)
               copy: charly-build-engine.py
