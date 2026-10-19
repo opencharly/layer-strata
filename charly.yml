@@ -44,29 +44,6 @@ discover:
 # what makes this gate runnable on an ordinary build host, while the real-engine bed
 # (check-strata-gpu-pod) needs the GPU venue and a provisioned 40+ GB model store and is run on
 # demand rather than in the default roster.
-check-strata-pod:
-    pod:
-        image: strata
-        disposable: true
-        lifecycle: dev
-        description: >-
-            Sole deterministic proof that the Strata image composes, that the engine is baked and
-            stamped, that the supervised service starts and stays up, that the published port
-            answers, and that the entire env -> config -> server projection works -- all without a
-            GPU and without downloading a 37-188 GB model, because the engine ships a scripted
-            mock mode for exactly this.
-        env:
-            # The D7 posture: the scripted engine, no model, no config.
-            STRATA_ENGINE: mock
-            MODEL: IQ2_XS
-            CONTEXT: "32768"
-            VISION: "no"
-        # A real API key, so the /v1/* gate is exercised rather than absent. The candy's
-        # secret_require makes the deployment supply it; the checks read /health's `api_key`
-        # flag, which is answered before the gate, so no probe needs the secret itself.
-        secret:
-            - name: STRATA_API_KEY
-
 # check-strata-gpu-pod — the family's REAL-engine witness.
 #
 # This is the only bed that exercises the compiled engine, the page-locking path, the multi-GB
