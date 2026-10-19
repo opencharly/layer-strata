@@ -217,6 +217,10 @@ strata:
                   .venv/bin/pip install --no-cache-dir -r requirements.txt
                   .venv/bin/python /opt/strata/charly-build-engine.py
                   rm -rf build build-vision
+                  # The runtime runs as uid 1000 and writes .strata-pip.json into the venv;
+                  # a root-owned tree makes that a hard PermissionError at first start
+                  # (measured). Hand the whole tree to the runtime user here, once.
+                  chown -R user:user /opt/strata
               cache:
                   - /root/.cache/pip
                   # NOT cached: /opt/strata/build and /opt/strata/third_party.
