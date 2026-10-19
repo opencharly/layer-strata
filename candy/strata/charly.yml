@@ -145,7 +145,10 @@ strata:
               exec: /opt/strata/charly-entrypoint.sh
               # NOT supervisord's 10 s default: the engine releases tens of GB of page-locked RAM
               # on SIGTERM, and a too-early SIGKILL leaves stale VRAM and a wedged GPU hand-off.
-              stop_timeout: 90s
+              # Integer form, and a MASK: the schema also permits "90s", but charly writes the
+              # value verbatim into supervisord's stopwaitsecs, which parses an int - so the
+              # duration form kills the service (ledger §89; filed against charly).
+              stop_timeout: 90
               restart: always
               enable: true
         plan:
