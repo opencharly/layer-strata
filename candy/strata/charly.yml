@@ -332,13 +332,9 @@ strata:
               # regardless would make a keyless local deployment permanently red, and asserting a
               # fixed 200 would leave a configured key unproven. The negative control therefore
               # keys off whether this deployment supplied a secret.
-              command: >-
-                  python3 -c "import json,os,sys,urllib.request;
-                  code=0
-                  try: urllib.request.urlopen('http://127.0.0.1:8080/v1/models')
-                  except urllib.error.HTTPError as e: code=e.code
-                  keyed=bool(os.environ.get('STRATA_API_KEY','').strip())
-                  sys.exit(0 if (code==401 if keyed else code==200) else 1)" 
+              command: |
+                  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/models)
+                  if [ -n "${STRATA_API_KEY:-}" ]; then [ "$code" = "401" ]; else [ "$code" = "200" ]; fi
             - check: "a completion round-trips, with reasoning_effort none and room for the answer"
               id: strata-completion
               context: [runtime]
