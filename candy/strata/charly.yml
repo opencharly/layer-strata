@@ -193,6 +193,19 @@ strata:
                   .venv/bin/pip install --no-cache-dir -r requirements.txt
                   .venv/bin/python /opt/strata/charly-build-engine.py
                   rm -rf build build-vision
+                  # Bake the per-model config too. The entrypoint seeds it from /opt/strata onto the
+                  # data volume at first start; without a baked copy the volume is empty by definition
+                  # and the runtime install pass runs -- which cannot write into the read-only
+                  # /opt/strata/.venv (measured: PermissionError on .strata-pip.json, then supervisord
+                  # FATAL, and no listener ever appears).
+                  .venv/bin/python setup.py --setup --yes --family "$FAMILY" --model "$MODEL" \
+                    --context "$CONTEXT" --vision "$VISION" \
+                    --data-dir /opt/strata/bake-data --host 0.0.0.0 --port 8080 --no-start
+                  # Name-agnostic on purpose: the config's basename is derived from the model tag, so
+                  # copying by glob keeps this step honest if the tag scheme changes.
+                  cp -f /opt/strata/bake-data/config/*.json /opt/strata/
+                  ls -l /opt/strata/*.json
+                  rm -rf /opt/strata/bake-data
               cache:
                   - /root/.cache/pip
                   # NOT cached: /opt/strata/build and /opt/strata/third_party.
