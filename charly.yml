@@ -116,10 +116,14 @@ check-strata-gpu-pod:
               id: strata-gpu-projection
               context: [runtime]
               exit_status: 0
+              # The expectation is the literal this bed declares above (CONTEXT: "65536"), not
+              # ${CONTEXT}: the check-var resolver does not see the pod env, so the reference was
+              # skipped as unresolved -- an assertion silently absent. The probe runs in-container
+              # (command: defaults to podman exec), so it dials the container port, not HOST_PORT.
               command: >-
                   python3 -c "import json,sys,urllib.request;
-                  h=json.load(urllib.request.urlopen('http://127.0.0.1:${HOST_PORT:8080}/health'));
-                  sys.exit(0 if str(h.get('max_context'))=='${CONTEXT}' else 1)"
+                  h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
+                  sys.exit(0 if str(h.get('max_context'))=='65536' else 1)"
             - check: "the engine binary reports the version its stamp records (a stamp can lie -- upstream #2054)"
               id: strata-gpu-engine-version
               context: [runtime]
@@ -136,7 +140,9 @@ check-strata-gpu-pod:
               id: strata-gpu-vision
               context: [runtime]
               exit_status: 0
+              # VISION is "no" above; same two reasons as the projection step for literalising it
+              # and dialling the container port.
               command: >-
                   python3 -c "import json,sys,urllib.request;
-                  h=json.load(urllib.request.urlopen('http://127.0.0.1:${HOST_PORT:8080}/health'));
-                  sys.exit(0 if bool(h.get('images')) == ('${VISION}'=='yes') else 1)"
+                  h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
+                  sys.exit(0 if bool(h.get('images')) is False else 1)"
