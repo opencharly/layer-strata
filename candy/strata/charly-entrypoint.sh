@@ -59,7 +59,17 @@ cfg="$STRATA_DATA/config/strata-$tag.json"
 link="/opt/strata/strata-$tag.json"
 mkdir -p "$STRATA_DATA/config"
 
-# --- the install pass: upstream's argv verbatim, only when it is needed ----------------------
+# --- seed the baked config BEFORE deciding whether to install --------------------------------
+# The image is baked, so the config it needs must be baked too ($link is that path). Without this
+# the condition below is true on every fresh volume -- the volume is empty by definition at first
+# start -- so a baked image re-runs the installer at every launch, and in a rootless container the
+# installer cannot write into /opt/strata/.venv: measured on the GPU bed as
+#   PermissionError: '/opt/strata/.venv/.strata-pip.json' -> supervisord FATAL -> no listener.
+if [ ! -f "$cfg" ] && [ -f "$link" ]; then
+    cp -f "$link" "$cfg" && echo "[charly] config seeded from the baked image: $cfg" >&2
+fi
+
+# --- the install pass: upstream's argv verbatim, only when it is genuinely needed ------------
 if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
     if [ -n "${GGUF_DIR:-}" ]; then
         echo "[charly] setting up $tag from the GGUF files in $GGUF_DIR (the engine is in the image)" >&2
