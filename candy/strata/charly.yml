@@ -308,6 +308,14 @@ strata:
               id: strata-completion
               context: [runtime]
               exit_status: 0
+              # The engine loads ~64 GB of weights after the server starts listening, so the first
+              # completion can wait longer than any per-request timeout. `eventually` is the
+              # documented poll-until-pass matcher (verb catalog, "Step fields"), not a sleep: the
+              # FIRST pass returns immediately, and a failure reports its attempt count and elapsed
+              # time rather than a bare timeout. Measured: check-live took 41s in the failing run
+              # versus 10s once the load had been given room.
+              eventually: "300s"
+              retry_interval: "5s"
               # Two measured traps sit behind this probe, either of which would make it assert
               # nothing: the engine defaults to thinking, and a small max_tokens truncates the
               # answer to `content: null` with finish_reason "length" (measured at 16 tokens).
