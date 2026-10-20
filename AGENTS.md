@@ -17,6 +17,13 @@ this repo. `README.md` is the user overview and never carries agent guidance.
   GPU stack this family composes.
 - `/charly-internals:git-workflow` — before any git/PR action.
 
+## This repo's own skills
+
+- `.agents/skills/strata/SKILL.md` - the headless Strata gateway box: the CachyOS-based image that SERVES
+  Qwen3.8-Flash-Next on port 8080. **Read it before changing `box/strata` or probing a deployed gateway.**
+- `.agents/skills/strata-layer/SKILL.md` - the engine layer itself: the pinned upstream tag, the setup-choice
+  surface, the rootless XDG model store and the config-overlay merge. **Read it before baking or re-pinning the engine.**
+
 ## What is unique here
 
 - **The engine is baked at image build** (`candy/strata/charly-build-engine.py`), exactly as
