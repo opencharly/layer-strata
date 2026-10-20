@@ -333,9 +333,14 @@ strata:
               # regardless would make a keyless local deployment permanently red, and asserting a
               # fixed 200 would leave a configured key unproven. The negative control therefore
               # keys off whether this deployment supplied a secret.
-              command: |
-                  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/models)
-                  if [ -n "${STRATA_API_KEY:-}" ]; then [ "$code" = "401" ]; else [ "$code" = "200" ]; fi
+              # This bed deploys the LOCAL posture: the key is optional and unset, so /v1/*
+              # is served openly. A declarative 200 is the honest assertion — the previous
+              # shell test read STRATA_API_KEY, which an assert-only step does not export, so
+              # it was DEAD (measured: "assertion is DEAD ... STRATA_API_KEY is empty").
+              # The keyed posture is covered by the candy's secret_accept contract, not here.
+              http:
+                  http: "http://127.0.0.1:${HOST_PORT:8080}/v1/models"
+                  status: 200
             - check: "a completion round-trips, with reasoning_effort none and room for the answer"
               id: strata-completion
               context: [runtime]
