@@ -43,7 +43,14 @@ and why the weights never enter the image).
 
 `setup.py` ships a fixed catalogue. A community model — a fine-tune, an uncensored variant, a
 different quantisation of the same architecture — is deployed by pointing the engine at its own pack
-and shards. Three things make that work, and each has a rule that is easy to get wrong.
+and shards.
+
+**Two different surfaces are involved, and only one of them is `charly`'s.** The deployment side is
+`charly` env (`STRATA_RUN_ARGS`, below). The packing side is the **engine's own tool, run inside the
+Strata source tree** — `charly` does not wrap it and this repo does not ship it. That is deliberate:
+`iq_pack.py` needs the engine's pinned llama.cpp `gguf-py`, so it is a source-tree operation by
+construction, not a deployment command. Three things make the whole flow work, and each has a rule
+that is easy to get wrong.
 
 ### 1. The surface is `STRATA_RUN_ARGS`, not a hand-edited config
 
@@ -72,16 +79,16 @@ including the small projections the engine reads as BF16:
 ```
 
 `--compat-bf16` dequantises only those small projections back to BF16, rounding nearest-even. The
-flag's own contract is that it leaves **the experts and the PLE table unchanged**; the pack's
-`compat-bf16.json` records exactly which tensors it converted.
+flag's own contract is that it leaves **the experts and the PLE table unchanged**.
 It rounds relative to the GGUF's own dequantised weights — it does **not** recover the original
-checkpoint, and the pack records what it converted in `compat-bf16.json`.
+checkpoint — and `compat-bf16.json` in the pack records exactly which tensors it converted.
 
 Two rules:
 
-- **Never pass `--base`** unless the two models genuinely share a float-tensor set. `--base` copies
-  the source pack's `tokenizer/` and reuses its `dense.bin`; borrowing another model's `dense.bin` is
-  wrong, and the pack must always export **its own** tokenizer from its own GGUF.
+- **Leave `--base` off.** It exists for a pack whose float tensors genuinely match another pack's —
+  it copies that pack's `tokenizer/` and reuses its `dense.bin`. Across two different models that is
+  wrong on both counts, and the pack must export **its own** tokenizer from its own GGUF. Pass it
+  only when you know the two packs share a float-tensor set.
 - **All split shards must be finished downloading before packing**, and the pack is built from
   **shard 1**. `--native` and `--ple-gguf` both point at that same first shard — the PLE lookup
   table lives there.
