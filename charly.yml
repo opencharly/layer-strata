@@ -13,7 +13,7 @@ defaults:
     # `ghcr.io/opencharly/strata:<check-tag>`, so the deploy cannot see the freshly built image and tries
     # to pull it instead. Measured on a full bed run (image-build PASS 17m7s, check-image PASS 39/0,
     # deploy-add PASS, then `charly config: unable to copy from source
-    # docker://ghcr.io/opencharly/strata:check-strata-pod-…`). Invisible to `box validate`, to `box
+    # docker://ghcr.io/opencharly/strata:check-strata-gpu-pod-…`). Invisible to `box validate`, to `box
     # generate`, to the image build and to all thirty-nine image checks: every one of them works on the
     # locally-tagged artifact, and only the deploy compares the built identity with the deployed one.
     # Declared to parity with the working sibling family repo (`layer-openclaw`), which is what the
@@ -35,15 +35,10 @@ discover:
     - path: box
       recursive: true
 
-# check-strata-pod — the family's deterministic R10 witness, and the gate for cutover 1.
-#
-# It declares NO plan of its own: every assertion it needs is baked into the `strata` candy, so a
-# second bed (or a consumer's box) inherits exactly the same probes without repeating a line (R3).
-#
-# It runs the engine's own scripted `--engine mock` mode, which needs NO GPU and NO model. That is
-# what makes this gate runnable on an ordinary build host, while the real-engine bed
-# (check-strata-gpu-pod) needs the GPU venue and a provisioned 40+ GB model store and is run on
-# demand rather than in the default roster.
+# check-strata-gpu-pod is the family's ONLY bed: PR #6 withdrew the GPU-free mock bed. It is the
+# real-engine witness and needs the GPU venue plus a provisioned 40+ GB model store, so it is run
+# on demand rather than in the default roster. `STRATA_ENGINE=mock` remains a RUNTIME posture of
+# the candy, not a bed; a consumer's box inherits the candy's probes without another bed.
 # check-strata-gpu-pod — the family's REAL-engine witness.
 #
 # This is the only bed that exercises the compiled engine, the page-locking path, the multi-GB
@@ -56,7 +51,8 @@ discover:
 # would otherwise skip or fail this bed on every unrelated run. The umbrella's `check-all-beds`
 # excludes it; it is run on demand with `charly check run <ns>.check-strata-gpu-pod`.
 #
-# Like its sibling it declares NO plan: every assertion is the candy's.
+# It carries the candy's baked probes plus its own runtime checks (the env -> config projection,
+# the engine-versus-stamp check, and the STRATA_RUN_ARGS surface).
 check-strata-gpu-pod:
     pod:
         image: strata
@@ -88,6 +84,8 @@ check-strata-gpu-pod:
             STRATA_MEMORY_LIMIT_MIB: "57344"
             # Weights that are already on the venue: the bed never downloads.
             GGUF_DIR: /gguf
+            # Prove the Layer-C surface: the deployment's extra argv must reach the run config.
+            STRATA_RUN_ARGS: "--vram-reserve-mib 832"
         volume:
             # Pre-existing GGUF files, read-write because the first start writes <shard>.done markers.
             # The provisioned shards live in models/<MODEL>/ on the venue store; gguf/<MODEL>/ exists but is
@@ -146,3 +144,14 @@ check-strata-gpu-pod:
                   python3 -c "import json,sys,urllib.request;
                   h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
                   sys.exit(0 if bool(h.get('images')) is False else 1)"
+            - check: the deployment's STRATA_RUN_ARGS reached the run config's argv
+              id: strata-gpu-run-args
+              context: [runtime]
+              exit_status: 0
+              # The config path is the bed's MODEL (IQ2_XS) lowercased by the entrypoint's own
+              # `strata-<model>.json` rule. The probe runs in-container (command defaults to
+              # podman exec), so it reads the VOLUME config, not the host store.
+              command: >-
+                  python3 -c "import json,sys;
+                  a=json.load(open('/data/config/strata-iq2_xs.json')).get('args',[]);
+                  sys.exit(0 if '--vram-reserve-mib' in a and a[a.index('--vram-reserve-mib')+1]=='832' else 1)"
