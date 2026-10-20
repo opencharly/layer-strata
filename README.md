@@ -29,13 +29,82 @@ The engine has no CPU-only mode.
 ## Configuration
 
 Everything is the deployment's `env:` — FAMILY, MODEL, CONTEXT, VISION, KV, GPU, GPUS, LAYER_SPLIT,
-LOW_RAM, GGUF_DIR, RESIDENT_BUDGET_GIB, KV_STREAMING, REINSTALL, plus the engine's `STRATA_*` tuning
-variables. The candy's `var:` block carries the documented defaults, and `STRATA_ENGINE=mock` runs
+LOW_RAM, GGUF_DIR, RESIDENT_BUDGET_GIB, KV_STREAMING, REINSTALL, the engine's `STRATA_*` tuning
+variables, and two surfaces for a model outside `setup.py`'s menu: `STRATA_RUN_ARGS` (extra engine
+argv, merged into the run config's `args` at every start) and `STRATA_OVERLAY_JSON` (an overlay merged
+into the config on the volume). See "Deploying a model outside the setup menu" below. The candy's `var:` block carries the documented defaults, and `STRATA_ENGINE=mock` runs
 upstream's scripted engine with no GPU and no model — which is how the deterministic bed proves the
 image without a card.
 
 See `AGENTS.md` for the invariants an author must keep (the engine bake, the config-ownership rule,
 and why the weights never enter the image).
+
+## Deploying a model outside the setup menu
+
+`setup.py` ships a fixed catalogue. A community model — a fine-tune, an uncensored variant, a
+different quantisation of the same architecture — is deployed by pointing the engine at its own pack
+and shards. Three things make that work, and each has a rule that is easy to get wrong.
+
+### 1. The surface is `STRATA_RUN_ARGS`, not a hand-edited config
+
+The run config's `args` is `SETUP_OWNED` (`candy/strata/charly-merge-config.py`), so nothing may
+rewrite it directly. `STRATA_RUN_ARGS` is the sanctioned surface: a shell-quoted extra argv merged
+into `args` at every start, where each **named** flag has its value replaced in place (or is appended
+when absent):
+
+```
+STRATA_RUN_ARGS: "--pack /data/packs/<name> --native <shard1> --ple-gguf <shard1> --mtp /data/mtp/rt"
+```
+
+A run config written **by hand** onto the volume (`/data/config/strata-<model>.json`) is also
+honoured: the entrypoint seeds a baked config only when none exists, and the install pass — the only
+place that would overwrite it — runs only when the config is absent or `REINSTALL=1`. So an existing
+hand-written config stays untouched. `STRATA_RUN_ARGS` is the declarative route; a hand-written
+config is the escape hatch.
+
+### 2. The pack decides whether the engine can read the weights at all
+
+Native kernels expect certain tensors in a specific layout. An ordinary GGUF quantises *everything*,
+including the small projections the engine reads as BF16:
+
+```
+.venv/bin/python tools/iq_pack.py --gguf <shard1> --out packs/<name> --compat-bf16
+```
+
+`--compat-bf16` dequantises only those small projections back to BF16, rounding nearest-even. The
+flag's own contract is that it leaves **the experts and the PLE table unchanged**; the pack's
+`compat-bf16.json` records exactly which tensors it converted.
+It rounds relative to the GGUF's own dequantised weights — it does **not** recover the original
+checkpoint, and the pack records what it converted in `compat-bf16.json`.
+
+Two rules:
+
+- **Never pass `--base`** unless the two models genuinely share a float-tensor set. `--base` copies
+  the source pack's `tokenizer/` and reuses its `dense.bin`; borrowing another model's `dense.bin` is
+  wrong, and the pack must always export **its own** tokenizer from its own GGUF.
+- **All split shards must be finished downloading before packing**, and the pack is built from
+  **shard 1**. `--native` and `--ple-gguf` both point at that same first shard — the PLE lookup
+  table lives there.
+
+A quantisation the native expert path cannot read (for example one whose expert down matrices use a
+format the GPU path does not support) is not made to work by this flag. Check the quantisation
+against the engine's supported set before packing.
+
+### 3. MTP and the arena are separate budgets
+
+The draft head (`--mtp`) is optional: without it the engine drafts by lookup only. It can be reused
+from another deployment of the same architecture, since the target model verifies its own proposals —
+but draft acceptance must be measured, not assumed.
+
+The **expert arena lives in system RAM**, not VRAM: expect tens of GiB free (the reference IQ3-level
+pack measured ~50 GiB) *plus* draft and runtime buffers. VRAM determines how much of the expert cache
+stays resident, so a smaller card makes the model slower rather than unusable — the cache adapts.
+
+### What stays local
+
+A concrete model's paths, pack name, quantisation and run config are the **deployment's** business,
+not this repo's. This repo ships the mechanism (the surface, the packing rules, the budgets); the
+deployment supplies the model.
 
 ## Licence
 
