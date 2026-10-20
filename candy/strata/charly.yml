@@ -370,6 +370,10 @@ strata-layer-skill:
         name: strata-layer
         family: strata
         owner: strata
+        triggers:
+            - 'the strata layer / composing an image that must SERVE the Strata engine'
+            - 'the Strata engine baked into an image / the setup-choice surface / the env: config overlay'
+        category: images
         description: |-
             The `strata` LAYER — the engine itself: baked from the pinned upstream tag, with the
             setup-choice surface, the rootless XDG model store, the supervised service and the
