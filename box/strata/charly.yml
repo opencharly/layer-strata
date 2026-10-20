@@ -28,6 +28,10 @@ strata-skill:
         name: strata
         family: strata
         owner: strata
+        triggers:
+            - 'the Strata box / the Qwen3.8-Flash-Next inference engine / an OpenAI- or Anthropic-compatible API on port 8080'
+            - 'deploying a local 125B-class model server on one consumer GPU'
+            - 'a service that needs an OpenAI- or Anthropic-speaking endpoint on the host'
         description: |-
             Strata box — the Qwen3.8-Flash-Next inference engine (OpenAI/Anthropic-compatible API on
             port 8080) on the CachyOS base, running rootless with its model store on the user's XDG
