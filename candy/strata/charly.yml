@@ -325,8 +325,8 @@ strata:
                   python3 -c "import json,os,sys,urllib.request;
                   r=urllib.request.Request('http://127.0.0.1:8080/v1/models',headers={'Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
                   sys.exit(0 if json.load(urllib.request.urlopen(r)).get('data') else 1)"
-            - check: "the gate matches the deployment -- open with no key, 401 with one"
-              id: strata-api-gate-closed
+            - check: "the gate matches this keyless deployment -- /v1/models answers 200 unauthenticated"
+              id: strata-api-gate-open
               context: [runtime]
               # The key is OPTIONAL (secret_accept): a local pod with no key serves /v1/* openly,
               # and a pod WITH one must refuse an unauthenticated read. Asserting a fixed 401

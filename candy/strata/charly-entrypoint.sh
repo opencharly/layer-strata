@@ -46,13 +46,10 @@ if [ -n "${API_KEY:-}" ]; then API_KEY_ARG="--api-key $API_KEY"; fi
 # --- the deterministic, GPU-free posture (D7) ------------------------------------------------
 if [ "${STRATA_ENGINE:-strata}" = "mock" ]; then
     echo "[charly] starting the scripted engine: no GPU, no model, no config" >&2
-    # The key has to reach the mock too. Without it /health reports api_key:false and the
-    # deterministic bed cannot prove the /v1/* gate at all -- measured: with --api-key the gate
-    # answers 401 without a key and 200 with one, and /health reports api_key:true.
-    if [ -n "$API_KEY" ]; then
-        exec .venv/bin/python -m serve.server --engine mock --host "$HOST" --port "$PORT" $API_KEY_ARG
-    fi
-    exec .venv/bin/python -m serve.server --engine mock --host "$HOST" --port "$PORT"
+    # The key reaches the mock the same way it reaches the real engine: $API_KEY_ARG is the
+    # flag when a key exists and empty otherwise, so /health reports the posture truthfully
+    # (api_key:true with a key, false without) and /v1/* is gated exactly as deployed.
+    exec .venv/bin/python -m serve.server --engine mock --host "$HOST" --port "$PORT" $API_KEY_ARG
 fi
 
 # --- the run config's identity (upstream's own tag rule: family prefix + lowercased model) ---
