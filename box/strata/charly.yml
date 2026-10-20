@@ -101,11 +101,10 @@ strata-skill:
               (and 401 without it), and a completion round-tripping with `reasoning_effort: none`.
               The engine binary's self-reported version against its stamp is verified by the **GPU**
               bed below, not here: that check runs the binary, which needs the device CDI injects.
-            - `charly check run strata.check-strata-pod` — the disposable, **GPU-free** bed: the
-              engine's scripted `--engine mock` mode proves the image, the supervised service, the
-              published port and the whole env -> config projection without a card or a model.
-            - The real-engine bed (`check-strata-gpu-pod`) needs the GPU venue and a provisioned model
-              store; it is excluded from the default roster and run on demand.
+            - `charly check run strata.check-strata-gpu-pod` — the family's ONLY bed (the GPU-free
+              mock bed was withdrawn in PR #6). It runs the real engine, so it needs the GPU venue
+              and a provisioned model store, and is excluded from the default roster and run on
+              demand. `STRATA_ENGINE=mock` remains a runtime posture, not a bed.
 
             ## Related
 

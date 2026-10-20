@@ -37,16 +37,19 @@ fi
 export STRATA_DATA PORT HOST FAMILY MODEL CONTEXT VISION LOW_RAM
 export API_KEY="${API_KEY:-}"
 
+# The API key is OPTIONAL: a local deployment leaves STRATA_API_KEY out entirely and the engine
+# then serves openly. The engine REJECTS an empty --api-key as malformed ("an API key was given
+# but it is empty"), so the flag is emitted ONLY when a key exists -- measured.
+API_KEY_ARG=""
+if [ -n "${API_KEY:-}" ]; then API_KEY_ARG="--api-key $API_KEY"; fi
+
 # --- the deterministic, GPU-free posture (D7) ------------------------------------------------
 if [ "${STRATA_ENGINE:-strata}" = "mock" ]; then
     echo "[charly] starting the scripted engine: no GPU, no model, no config" >&2
-    # The key has to reach the mock too. Without it /health reports api_key:false and the
-    # deterministic bed cannot prove the /v1/* gate at all -- measured: with --api-key the gate
-    # answers 401 without a key and 200 with one, and /health reports api_key:true.
-    if [ -n "$API_KEY" ]; then
-        exec .venv/bin/python -m serve.server --engine mock --host "$HOST" --port "$PORT" --api-key "$API_KEY"
-    fi
-    exec .venv/bin/python -m serve.server --engine mock --host "$HOST" --port "$PORT"
+    # The key reaches the mock the same way it reaches the real engine: $API_KEY_ARG is the
+    # flag when a key exists and empty otherwise, so /health reports the posture truthfully
+    # (api_key:true with a key, false without) and /v1/* is gated exactly as deployed.
+    exec .venv/bin/python -m serve.server --engine mock --host "$HOST" --port "$PORT" $API_KEY_ARG
 fi
 
 # --- the run config's identity (upstream's own tag rule: family prefix + lowercased model) ---
@@ -77,7 +80,7 @@ if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
         echo "[charly] setting up $tag: downloading the model (~70 GB; the engine is in the image)" >&2
     fi
     set -- --family "$FAMILY" --model "$MODEL" --context "$CONTEXT" --vision "$VISION" \
-        --data-dir "$STRATA_DATA" --host "$HOST" --api-key "$API_KEY" \
+        --data-dir "$STRATA_DATA" --host "$HOST" $API_KEY_ARG \
         --port "$PORT" --no-start --low-ram "$LOW_RAM"
     # Each of these is passed ONLY when set, so an unset one keeps setup.py's own default.
     if [ -n "${KV:-}" ]; then set -- "$@" --kv "$KV"; fi
@@ -117,6 +120,18 @@ if [ -f "$cfg" ]; then
     fi
 fi
 
+# --- Layer C: merge a deployment-supplied extra argv into the config's `args` ------------------
+# The engine's argv is the run config's `args`, which setup.py records and the overlay helper
+# refuses by design. A model outside setup.py's menu -- a community pack with its own
+# --pack/--native/--ple-gguf/--mtp -- is what STRATA_RUN_ARGS exists for: the deployment supplies
+# the extra argv and this helper replaces/appends each flag in place. Empty is a no-op.
+if [ -f "$cfg" ] && [ -n "${STRATA_RUN_ARGS:-}" ]; then
+    python3 /opt/strata/charly-merge-args.py "$cfg" "$STRATA_RUN_ARGS" || {
+        echo "[charly] FATAL: STRATA_RUN_ARGS could not be merged into $cfg" >&2
+        exit 1
+    }
+fi
+
 # --- re-assert the documented invariant (#1244) ----------------------------------------------
 # The launch below passes --config "$cfg" explicitly, so the server does not read this link. It is
 # kept for a settings pass that resolves the image-baked name instead of the volume path.
@@ -137,4 +152,4 @@ fi
 # The card pins belong in the config ($cfg, assembled above), not on a command line: server.py does
 # not accept --gpus/--gpu/--layer-split.
 exec .venv/bin/python serve/server.py --engine strata --config "$cfg" \
-    --host "$HOST" --port "$PORT" --api-key "$API_KEY"
+    --host "$HOST" --port "$PORT" $API_KEY_ARG

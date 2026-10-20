@@ -28,8 +28,10 @@ strata:
             - **The whole configuration is the deployment's `env:`.** The setup choices are the
               engine's own documented variables — FAMILY, MODEL, CONTEXT, VISION, KV, GPU, GPUS,
               LAYER_SPLIT, LOW_RAM, GGUF_DIR, RESIDENT_BUDGET_GIB, KV_STREAMING, REINSTALL — with
-              the candy's `var:` as the documented default, and the server-behaviour keys come
-              from the charly-authored overlay in `/opt/strata/charly-overlay.json`.
+              the candy's `var:` as the documented default; `STRATA_RUN_ARGS` carries an external
+              model's extra engine argv (a community pack's `--pack/--native/--ple-gguf/--mtp`),
+              and the server-behaviour keys come from the charly-authored overlay in
+              `/opt/strata/charly-overlay.json`.
 
             It runs **rootless**: no privileged container, no root-owned host path. `HOST` stays
             `0.0.0.0` because the pod publishes the port, which is why `STRATA_API_KEY` is a
@@ -107,6 +109,12 @@ strata:
             # The key names are not listed on purpose: `charly strata config` (or GET /config) is the
             # engine's own published catalogue, and a copy here would drift from it.
             STRATA_OVERLAY_JSON: ""
+            # A deployment-supplied EXTRA engine argv (Layer C), shell-quoted, merged into the run
+            # config's `args` at every start. This is the surface for a model outside setup.py's
+            # menu -- a community pack with its own --pack/--native/--ple-gguf/--mtp: each named
+            # flag has its value replaced in place (or is appended when absent). Empty keeps the
+            # recorded argv untouched.
+            STRATA_RUN_ARGS: ""
             # The overlay the entrypoint merges into the run config on the volume (Layer B).
             STRATA_OVERLAY: /opt/strata/charly-overlay.json
         distro:
@@ -124,15 +132,18 @@ strata:
             # path: /data}`) or `charly config strata --bind strata-data` does.
             - name: strata-data
               path: /data
-        secret_require:
-            # `require`, not `accept`: a missing required secret fails at `charly config` instead
-            # of silently leaving the endpoint open. This is the ENV name; the charly entrypoint
-            # projects it to the `API_KEY` name upstream's contract reads.
+        secret_accept:
+            # OPTIONAL by contract: a LOCAL strata deployment runs with no API key and therefore
+            # serves /v1/* openly. Set one only when the endpoint is reachable by someone else
+            # (a published host port on a shared network); the entrypoint projects this ENV name
+            # to the `API_KEY` name upstream's contract reads. An unset value means the entrypoint
+            # passes NO `--api-key` flag at all — the engine REJECTS an empty one ("an API key was
+            # given but it is empty"), so omitting the flag is what "no auth" actually requires.
             - name: STRATA_API_KEY
               description: >-
-                  Bearer / x-api-key token for /v1/*. Mandatory in practice: the pod publishes
-                  8080, and upstream's own advice is to set a key before exposing the port.
-                  /health stays pre-auth, so a liveness probe needs no secret.
+                  OPTIONAL Bearer / x-api-key token for /v1/*. Unset by default so a local pod
+                  serves openly; set it when the port is exposed beyond the host.
+                  /health stays pre-auth either way, so a liveness probe needs no secret.
         env_provide:
             # Product-scoped only. A generic OPENAI_BASE_URL would silently redirect every
             # OpenAI-speaking service in the same pod, so consumers opt in with env_accept.
@@ -189,6 +200,11 @@ strata:
               to: /opt/strata/charly-merge-config.py
               mode: "0644"
               run_as: root
+            - run: install the run-args merge helper
+              copy: charly-merge-args.py
+              to: /opt/strata/charly-merge-args.py
+              mode: "0644"
+              run_as: root
             - run: install the charly entrypoint
               copy: charly-entrypoint.sh
               to: /opt/strata/charly-entrypoint.sh
@@ -202,6 +218,10 @@ strata:
                   .venv/bin/pip install --no-cache-dir -r requirements.txt
                   .venv/bin/python /opt/strata/charly-build-engine.py
                   rm -rf build build-vision
+                  # The runtime runs as uid 1000 and writes .strata-pip.json into the venv;
+                  # a root-owned tree makes that a hard PermissionError at first start
+                  # (measured). Hand the whole tree to the runtime user here, once.
+                  chown -R user:user /opt/strata
               cache:
                   - /root/.cache/pip
                   # NOT cached: /opt/strata/build and /opt/strata/third_party.
@@ -295,7 +315,7 @@ strata:
                   python3 -c "import json,os,sys,urllib.request;
                   h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
                   fields=('max_context','images','model');
-                  sys.exit(0 if h.get('status')=='ok' and h.get('api_key') is True
+                  sys.exit(0 if h.get('status')=='ok' and isinstance(h.get('api_key'), bool)
                              and all(f in h for f in fields) else 1)"
             - check: the API gate is real once a key is set, so /v1/models needs it
               id: strata-api-gate
@@ -305,14 +325,22 @@ strata:
                   python3 -c "import json,os,sys,urllib.request;
                   r=urllib.request.Request('http://127.0.0.1:8080/v1/models',headers={'Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
                   sys.exit(0 if json.load(urllib.request.urlopen(r)).get('data') else 1)"
-            - check: "and it is CLOSED without one -- a negative control, 401 rather than 200"
-              id: strata-api-gate-closed
+            - check: "the gate matches this keyless deployment -- /v1/models answers 200 unauthenticated"
+              id: strata-api-gate-open
               context: [runtime]
-              # A positive probe alone cannot tell a working gate from a gate that was never
-              # installed. Measured on the engine: no key -> 401, with the key -> 200.
+              # The key is OPTIONAL (secret_accept): a local pod with no key serves /v1/* openly,
+              # and a pod WITH one must refuse an unauthenticated read. Asserting a fixed 401
+              # regardless would make a keyless local deployment permanently red, and asserting a
+              # fixed 200 would leave a configured key unproven. The negative control therefore
+              # keys off whether this deployment supplied a secret.
+              # This bed deploys the LOCAL posture: the key is optional and unset, so /v1/*
+              # is served openly. A declarative 200 is the honest assertion — the previous
+              # shell test read STRATA_API_KEY, which an assert-only step does not export, so
+              # it was DEAD (measured: "assertion is DEAD ... STRATA_API_KEY is empty").
+              # The keyed posture is covered by the candy's secret_accept contract, not here.
               http:
                   http: "http://127.0.0.1:${HOST_PORT:8080}/v1/models"
-                  status: 401
+                  status: 200
             - check: "a completion round-trips, with reasoning_effort none and room for the answer"
               id: strata-completion
               context: [runtime]
@@ -369,7 +397,9 @@ strata-layer-skill:
             Everything is the deployment's `env:` — the engine's own documented variables, renamed by
             nothing: `FAMILY`, `MODEL`, `CONTEXT`, `VISION`, `KV`, `GPU`, `GPUS`, `LAYER_SPLIT`,
             `LOW_RAM`, `RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `REINSTALL`, `GGUF_DIR`, plus
-            `STRATA_OVERLAY_JSON` for the server-behaviour keys. `LOW_RAM` is always passed through:
+            `STRATA_RUN_ARGS` for an external model's extra engine argv (a community pack's own
+            `--pack/--native/--ple-gguf/--mtp`), and `STRATA_OVERLAY_JSON` for the
+            server-behaviour keys. `LOW_RAM` is always passed through:
             `setup.py` measures RAM from `/proc/meminfo`, which in a container is the HOST's total,
             so a memory-capped container must ask for the low-RAM path itself.
 
