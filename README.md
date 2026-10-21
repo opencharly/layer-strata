@@ -23,8 +23,9 @@ by design, so a liveness probe never needs the secret.
 ## Requirements
 
 An NVIDIA RTX 20/30/40/50 with **12 GB+ VRAM**, a driver **>= 580**, **32 GB+ of RAM** (64 GB runs
-every size), **~80 GB of free disk** for the model plus ~6 GB for the MTP layer, and an AVX2 CPU.
-The engine has no CPU-only mode.
+every size), **~80 GB of free disk** for the model plus ~6 GB for the MTP layer (and ~0.9 GB for the
+picture encoder, fetched on the first start with pictures on), and an AVX2 CPU. The engine has no
+CPU-only mode.
 
 ## Configuration
 
@@ -37,7 +38,71 @@ upstream's scripted engine with no GPU and no model — which is how the determi
 image without a card.
 
 See `AGENTS.md` for the invariants an author must keep (the engine bake, the config-ownership rule,
-and why the weights never enter the image).
+and why the weights never enter the image). `LEDGER.md` carries the decision record for the
+pictures-on default, including the measured evidence behind it.
+
+## Context: 64K by default
+
+`CONTEXT` defaults to **`65536`**, and `STRATA_RUN_ARGS` defaults to **`--vram-reserve-mib 1024`**.
+The engine's own recommendation for a small card is lower (32768 at ≤16.5 GB of VRAM), so this is a
+deliberate default for agent clients — one Hermes Agent turn measures ~12K prompt tokens before it
+does anything — and it works because the KV cache streams to system RAM from 64K up. The reserve is
+the part that makes 64K safe on a small card: measured at 64K on a 16 GB card, the engine's own
+700-MiB default left a request 413 MiB of VRAM free and warned that the driver can page GPU memory
+to RAM (upstream #2065); 960 still measured 509 MiB — 3 MiB under the engine's 512-MiB threshold —
+and 1024 clears it.
+
+`CONTEXT` is an **install-time** choice: an installed config keeps its recorded `--max-context`, so
+moving an existing deployment is a `STRATA_RUN_ARGS` change:
+
+```sh
+charly config strata -i <instance> -e "STRATA_RUN_ARGS=--max-context 65536 --kv-resident 32768 --vram-reserve-mib 1024"
+charly restart strata -i <instance>
+```
+
+A deployment that sets `STRATA_RUN_ARGS` owns the whole string — the candy's reserve default does not
+merge with yours. The model's trained length is 262144; past that, upstream's setup requires rope
+scaling (yarn), at a quality cost.
+
+## Pictures
+
+**They are on by default.** Send an `image_url` part (a `data:` URL, an `http(s)` URL or a local
+file path) or an Anthropic `image` block, and the model reads it:
+
+```python
+import base64
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="none")
+img = base64.b64encode(open("photo.jpg", "rb").read()).decode()
+r = client.chat.completions.create(model="strata", messages=[{"role": "user", "content": [
+    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}},
+    {"type": "text", "text": "What is in this picture?"}]}])
+print(r.choices[0].message.content)
+```
+
+`VISION` picks the reader: `cpu` (the default) reads pictures on the CPU and takes nothing from the
+card; `gpu` reads them on the card at a cost of ~1.2-1.4 GB of VRAM; `no` turns them off. `yes`/`on`
+mean `cpu` here — upstream maps `--vision yes` to the card's reader, and this family does not, because
+the expert cache already runs VRAM-tight (`VISION: gpu` asks for it by name). `VISION_THREADS` and
+`VISION_TOKENS` tune the CPU reader's threads and the most image tokens a picture may become.
+
+`VISION` takes effect on **every** start, including on an already-installed model: a charly-owned pass
+(`candy/strata/charly-vision.py`) writes the engine's run config for you. With pictures on, the model
+loads at container start rather than on the first request — upstream's settings API refuses to set lazy
+loading on a model that reads images, so the pass turns it off rather than leave a config upstream
+would not write.
+
+Two things are worth knowing when you supply your own encoder:
+
+- The **software** is in the image: the `strata-vision` encoder binary is baked beside the engine.
+  The **encoder file** is model data: it is fetched once into the model store (`<store>/vision/`) and
+  reused, never baked into the image.
+- Upstream ships one encoder per family (qwen, swift, coder, unsloth, nvfp4) and none for `qwen36`.
+  For a **community fine-tune** — anything outside that table — name your own with
+  `VISION_MMPROJ_URL` (and optionally `VISION_MMPROJ`); until you do, pictures stay off and one line
+  in the log says so. Measured workable: an uncensored IQ3_XXS community pack reads pictures correctly
+  through the base model's BF16 encoder once named — but that is the deployment's claim, not a default
+  this repo makes for it.
 
 ## Deploying a model outside the setup menu
 

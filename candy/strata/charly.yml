@@ -7,18 +7,29 @@ strata:
         # image build so the first start never compiles it (D6), the model store is a host path the
         # operator defines under their XDG data directory (D15/D16), and the configuration is
         # charly.yml fields plus a charly-authored overlay merged by mechanism (a) (D12).
+        #
+        # The pictures-on-by-default change (2026-10-21) has its decisions in THIS repo's `LEDGER.md`
+        # (V1-V8) rather than in that plan document, which is referenced throughout this family but
+        # is ABSENT from opencharly/opencharly's origin/main -- recorded as open item O1 in LEDGER.md,
+        # because a citation that cannot be resolved is a stale claim, not a reference.
         description: |
             Strata — the Qwen3.8-Flash-Next inference engine (125B MoE) serving an OpenAI- and
             Anthropic-compatible API on port 8080, with the engine compiled INTO THE IMAGE exactly
             the way upstream's own Dockerfile compiles it.
 
-            Three properties matter to a consumer:
+            Four properties matter to a consumer:
 
             - **The engine is baked, so the first start never compiles.** `engine/BUILD.json`
               records `source: "local"` with the matching source hash, which is what makes
               `setup.py` reuse the engine instead of rebuilding it. The stamp is written only
               after a successful build AND the runtime checks the binary self-reports the stamped
               version, because upstream #2054 shows a *failed* build can leave a stamp that lies.
+            - **Pictures are on by default.** `VISION: cpu` reads images with the image encoder on
+              the CPU (nothing is taken from the card), and the charly vision pass applies it on
+              EVERY start — not only the first, because the run config's `vision` section is written
+              by `setup.py`, which never runs again once the config exists. `VISION: gpu` reads them
+              on the card, `VISION: no` turns them off. The encoder BINARY is baked into the image;
+              the encoder FILE (0.9 GB of model data) is fetched once into the model store and reused.
             - **The model store is yours, mounted not baked.** The weights are 37-188 GB and are
               licensed separately from the MIT engine (Qwen Community License 1.0 / Apache-2.0 /
               Swift Open License), so they never enter the image. `/data` is a named volume here
@@ -80,8 +91,43 @@ strata:
             # is renamed.
             FAMILY: qwen
             MODEL: IQ2_XS
-            CONTEXT: "32768"
-            VISION: "no"
+            # 64K, not the engine's own recommendation for a small card (ledger V9): `own_path_context`
+            # returns 32768 at <=16.5 GB of VRAM. 64K is what an agent client actually needs -- a
+            # Hermes Agent turn measures ~12K prompt tokens before it does anything -- and it is
+            # affordable because the KV cache STREAMS to system RAM from 64K up, which needs the
+            # `--kv-resident` flag STRATA_RUN_ARGS below carries and the reserve that goes with it.
+            # Measured on a 16 GB card: 64K serves, 0.9 GB of KV in RAM, 80.7% expert-cache hit rate.
+            #
+            # CONTEXT is an INSTALL-TIME choice: setup.py records it as the config's `--max-context`,
+            # and an installed config keeps its recorded value (unlike VISION, which had no reachable
+            # surface at all). An existing deployment moves it with STRATA_RUN_ARGS -- see README.
+            CONTEXT: "65536"
+            # PICTURES ARE ON BY DEFAULT (ledger V1). `cpu` reads them on the CPU: it takes nothing
+            # from the card, and the expert cache of this engine already runs VRAM-tight (measured on
+            # the 16 GB bed venue: 413 MiB free with everything loaded). `gpu` reads them on the card
+            # and costs ~1.2-1.4 GB of VRAM; `no`/`off` turns them off. `yes`/`on` are accepted as
+            # aliases for `cpu` and SAY SO, because at the pinned tag setup.py maps `--vision yes` to
+            # the GPU reader -- upstream measured that reader SLOWER for text on a 16 GB card
+            # (46.0 vs 48.4 tok/s), so the alias is deliberately not upstream's mapping.
+            #
+            # This reaches the engine through the charly vision pass (ledger V2) on EVERY start,
+            # not only the first: setup.py writes the run config's vision section, and setup.py does
+            # not run again once the config exists.
+            VISION: cpu
+            # The encoder is MODEL DATA (0.9 GB, licensed with the weights): it is fetched ONCE into
+            # the model store (/data/vision/) and reused, never baked into the image -- the same rule
+            # the weights follow. The SOFTWARE beside it (the `strata-vision` binary, 222 MB) IS in
+            # the image, built by charly-build-engine.py, and two build-context checks below assert
+            # it. Upstream ships an encoder per family and none for `qwen36`; a model outside that
+            # table (a community fine-tune) names its own file here -- measured workable on the ORCA
+            # pack with the base model's encoder, but a deployment's claim to make, not a default.
+            VISION_MMPROJ_URL: ""
+            VISION_MMPROJ: ""
+            # The CPU reader's thread count (upstream's own rule: half the cores) and the most image
+            # tokens a picture may become (upstream's device defaults: 300 on the CPU, 1024 on the
+            # card). Empty means those defaults.
+            VISION_THREADS: ""
+            VISION_TOKENS: ""
             KV: ""
             GPU: ""
             GPUS: ""
@@ -112,9 +158,17 @@ strata:
             # A deployment-supplied EXTRA engine argv (Layer C), shell-quoted, merged into the run
             # config's `args` at every start. This is the surface for a model outside setup.py's
             # menu -- a community pack with its own --pack/--native/--ple-gguf/--mtp: each named
-            # flag has its value replaced in place (or is appended when absent). Empty keeps the
-            # recorded argv untouched.
-            STRATA_RUN_ARGS: ""
+            # flag has its value replaced in place (or is appended when absent).
+            #
+            # The DEFAULT is the VRAM reserve that a 64K context needs on a small card (ledger V9).
+            # Measured on the 16 GB venue at 64K: with the engine's own 700-MiB default it reported
+            # 413 MiB free per request and warned that the driver can page GPU memory to system RAM
+            # (upstream #2065); at 960 it still measured 509 MiB -- 3 MiB under the engine's 512
+            # threshold -- and the engine asked for 1024, which clears it (673 MiB free at load,
+            # 80.7% expert-cache hit rate). A deployment that sets this variable owns the WHOLE
+            # string, so include your own reserve (and --kv-resident when you raise the context)
+            # rather than expecting the default to merge with yours.
+            STRATA_RUN_ARGS: "--vram-reserve-mib 1024"
             # The overlay the entrypoint merges into the run config on the volume (Layer B).
             STRATA_OVERLAY: /opt/strata/charly-overlay.json
         distro:
@@ -205,6 +259,13 @@ strata:
               to: /opt/strata/charly-merge-args.py
               mode: "0644"
               run_as: root
+            # The vision pass (ledger V2): the ONE writer of the run config's setup-owned `vision`
+            # section on an installed model, and the owner of the encoder file on the volume.
+            - run: install the vision pass
+              copy: charly-vision.py
+              to: /opt/strata/charly-vision.py
+              mode: "0644"
+              run_as: root
             - run: install the charly entrypoint
               copy: charly-entrypoint.sh
               to: /opt/strata/charly-entrypoint.sh
@@ -247,6 +308,15 @@ strata:
             # thinking). Writing it into the run config would be an inert key that CLAIMS to set a behaviour
             # -- the same class of falsehood as a fabricated `ptx` in the engine stamp. The verified
             # mechanism for it is per-request; the candy's completion probe uses exactly that.
+            # NOTE -- `lazy_load: true` below is reconciled, not contradicted, by the vision pass.
+            # Upstream's settings validator REFUSES to set `lazy_load: true` on a config that reads
+            # images (serve/runconfig.py:92; its only call site is the settings-write path), and
+            # documents the key as text-only, while the LOAD path tolerates the pair (measured: the
+            # engine starts and reports images: true). A fast first answer matters more for the common
+            # text-only deployment, so the overlay keeps the fast path, and the vision pass -- which
+            # runs after it, on every start -- turns lazy loading off WHEN it writes the section, so
+            # the config stays one upstream's own API would write, and says so in one line (ledger V4).
+            # One owner per fact: the deployment's policy here, the contract there.
             - run: write the server-behaviour overlay the entrypoint merges into the run config
               config: /opt/strata/charly-overlay.json
               mode: "0644"
@@ -283,6 +353,67 @@ strata:
               file:
                   file: /opt/strata/.venv/bin/python
                   exists: true
+            # ---- the vision SOFTWARE is in the image; its DATA never is (ledger V5) ----
+            - check: the image-encoder binary is baked beside the engine
+              id: strata-vision-binary
+              file:
+                  file: /opt/strata/engine/strata-vision
+                  exists: true
+            - check: the engine stamp records an encoder build, so the binary matches this engine
+              id: strata-vision-stamp
+              exit_status: 0
+              # The same discipline as the engine's own stamp check: BUILD.json is written LAST by
+              # charly-build-engine.py, so "the encoder exists" alone would not prove it was built
+              # from THIS engine's source -- the stamp is what ties the two together.
+              command: >-
+                  python3 -c "import json,sys; m=json.load(open('/opt/strata/engine/BUILD.json'));
+                  sys.exit(0 if m.get('vision') in ('cpu','gpu') and m.get('vision_src') else 1)"
+            - check: the family/encoder table equals upstream's own, so a repin cannot drift it
+              id: strata-vision-table
+              exit_status: 0
+              # The helper carries the family -> encoder table as DATA (it may not import upstream's
+              # setup.py at runtime: that is ~1 GB of imports and internals the wrapper deliberately
+              # does not depend on). This check is what keeps that copy honest: it compares every row
+              # against setup.FAMILIES / OWN_PATH_FAMILIES IN THE BUILT IMAGE, so advancing the pin
+              # fails here instead of silently pointing a deployment at the wrong encoder. A row of
+              # None means "upstream ships no encoder", and is asserted to match upstream's own
+              # vision: False -- that is qwen36.
+              command: >-
+                  /opt/strata/.venv/bin/python -c "import importlib.util,sys; sys.path.insert(0,'/opt/strata');
+                  import setup; fams={**setup.FAMILIES, **setup.OWN_PATH_FAMILIES};
+                  spec=importlib.util.spec_from_file_location('cv','/opt/strata/charly-vision.py');
+                  cv=importlib.util.module_from_spec(spec); spec.loader.exec_module(cv);
+                  bad=[];
+                  [bad.append(n+': absent upstream') if n not in fams else
+                   (bad.append(n+': upstream ships an encoder') if row is None and fams[n].get('vision', True) is not False else
+                    (bad.append(n+': url/file differ') if row is not None and (row['url']+row['file']) != (fams[n].get('mmproj_hf','')+fams[n].get('mmproj','')) else None))
+                   for n, row in cv.FAMILIES.items()];
+                  print('table mismatches:', bad);
+                  sys.exit(0 if not bad else 1)"
+            - check: "the vision pass writes the section, reuses a present encoder, and settles lazy_load"
+              id: strata-vision-pass
+              exit_status: 0
+              # The deterministic, GPU-free and NETWORK-free proof of the pass the deployment runs:
+              # a synthetic run config, a pre-created encoder file (so the reuse path is exercised and
+              # no download is attempted), and a re-run to prove idempotency. It fails on the
+              # pre-change tree by construction -- there is no /opt/strata/charly-vision.py to run.
+              command: >-
+                  python3 -c "import json,os,pathlib,subprocess,sys,tempfile;
+                  d=pathlib.Path(tempfile.mkdtemp()); (d/'vision').mkdir();
+                  (d/'vision'/'mmproj-test.gguf').write_bytes(b'GGUF'+bytes(4096));
+                  p=d/'strata-t.json'; p.write_text(json.dumps({'args':['--native','/x/model-00001-of-00002.gguf','--max-context','32768'],'lazy_load':True,'model_name':'t'}));
+                  env=dict(os.environ, VISION='cpu', FAMILY='qwen', VISION_MMPROJ='mmproj-test.gguf',
+                           VISION_MMPROJ_URL='http://127.0.0.1:1/unreachable', STRATA_DATA=str(d), VISION_THREADS='2');
+                  r=subprocess.run(['python3','/opt/strata/charly-vision.py',str(p)],env=env,capture_output=True,text=True);
+                  c=json.loads(p.read_text()); v=c.get('vision') or {};
+                  r2=subprocess.run(['python3','/opt/strata/charly-vision.py',str(p)],env=env,capture_output=True,text=True);
+                  ok=(r.returncode==0 and v.get('exe')=='/opt/strata/engine/strata-vision'
+                      and v.get('mmproj')==str(d/'vision'/'mmproj-test.gguf')
+                      and v.get('model')=='/x/model-00001-of-00002.gguf' and v.get('gpu') is False
+                      and v.get('threads')==2 and v.get('max_tokens')==300 and c.get('lazy_load') is False
+                      and r2.returncode==0 and 'already in effect' in r2.stdout);
+                  print(r.stdout or r.stderr); print(r2.stdout or r2.stderr);
+                  sys.exit(0 if ok else 1)"
             # NOTE -- there is deliberately NO candy-level check that RUNS the engine binary. It cannot
             # be satisfied without a device (the binary loads libcuda, which CDI injects at runtime and
             # which no build context has), so such a check would break the deterministic GPU-free bed --
