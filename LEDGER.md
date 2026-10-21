@@ -138,9 +138,17 @@ back to crash-prevention — and the measurement above is what would need re-run
 
 ## V5 — The encoder's SOFTWARE is in the image; its DATA never is
 
-**Decision.** The `strata-vision` binary (222,994,464 bytes) is baked by
-`charly-build-engine.py`; the `mmproj` encoder file (907,543,008 bytes) is fetched once into the
-model store (`/data/vision/`) and reused. No `download:` plan step ever puts an encoder in the image.
+**What this change does and does not do.** The bake PRE-EXISTS on `main`: `charly-build-engine.py`
+already builds `strata-vision` (`STRATA_BUILD_VISION: "1"`, and `BUILD.json` records
+`vision: "gpu"` with a `vision_src` hash). `charly-build-engine.py` is **not among this change's
+files**. What this change adds is the DECISION that the encoder belongs in the image while its data
+never does, and the two checks that assert it — because before this change nothing said either way
+and nothing verified it.
+
+**Decision.** The `strata-vision` binary (222,994,464 bytes) stays in the image, baked beside the
+engine by that pre-existing bake. The `mmproj` encoder file (907,543,008 bytes) is fetched once into
+the model store (`/data/vision/`) and reused. No `download:` plan step ever puts an encoder in the
+image.
 
 **Why.** The binary is software: it must be there before the first start, or every deployment
 compiles or fails. The encoder file is model data — licensed with the weights, as large as a small
@@ -148,9 +156,11 @@ model, and useless without the model it belongs to. Baking it would break the fa
 that a model never enters the image, and would ship Qwen-licensed weights inside a published layer.
 
 **Evidence.** `engine/BUILD.json` = `{"source": "local", "version": "0.1.44.1", "vision": "gpu"}` on a
-built image, with the binary beside the engine. The downloaded encoder:
+built image, with the binary beside the engine — confirmed in the image this change was gated on by
+`charly check box strata`: `PASS check the image-encoder binary is baked beside the engine
+[strata-vision-binary]` and `PASS ... [strata-vision-stamp]`. The downloaded encoder:
 `sha256 b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0`, 907,543,008 bytes,
-GGUF magic `GGUF`.
+GGUF magic `GGUF` — a size and hash upstream itself pins for the nvfp4 family (`mmproj_sha256`).
 
 **Control.** `strata-vision-binary` (file exists) and `strata-vision-stamp` (`BUILD.json` records
 `vision` ∈ {cpu,gpu} **and** a `vision_src` hash — the same "a stamp can lie" discipline as the
