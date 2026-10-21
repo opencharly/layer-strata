@@ -285,9 +285,14 @@ git -C opencharly/opencharly ls-tree -r --name-only origin/main | grep -i strata
 
 So every D-number in this family currently resolves to nothing. That is recorded here rather than
 silently re-invented: the missing entries were NOT reconstructed from their citations, because
-reconstructing a decision record from references to it produces fiction with authority. Whoever owns
-that plan document should restore it; until then, this file is the resolvable record for the vision
-change, and `V*` ids are used deliberately so they cannot be confused with D*.
+reconstructing a decision record from references to it produces fiction with authority.
+
+**Filed: opencharly/opencharly#556** — asking the owning repo either to restore the document (it
+evidently exists off-repo, in a session plan directory) or to confirm it was retired, so this family
+can drop the citations in one pass and re-home the decisions it still depends on (the bake, the
+host-path store, the overlay mechanism, the `SETUP_OWNED` rule) here. Until one of those happens, this
+file is the resolvable record for the vision change, and `V*` ids are used deliberately so they cannot
+be confused with D*.
 
 ---
 

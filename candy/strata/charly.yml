@@ -10,7 +10,8 @@ strata:
         #
         # The pictures-on-by-default change (2026-10-21) has its decisions in THIS repo's `LEDGER.md`
         # (V1-V8) rather than in that plan document, which is referenced throughout this family but
-        # is ABSENT from opencharly/opencharly's origin/main -- recorded as open item O1 in LEDGER.md,
+        # is ABSENT from opencharly/opencharly's origin/main -- recorded as open item O1 in LEDGER.md
+        # and filed as opencharly/opencharly#556,
         # because a citation that cannot be resolved is a stale claim, not a reference.
         description: |
             Strata — the Qwen3.8-Flash-Next inference engine (125B MoE) serving an OpenAI- and

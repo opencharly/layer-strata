@@ -43,7 +43,7 @@ this repo. `README.md` is the user overview and never carries agent guidance.
   with `VISION_MMPROJ_URL`: nothing is borrowed silently.
 - **`LEDGER.md` is this repo's decision record.** The D-numbers cited throughout this family point at
   `opencharly/opencharly`'s `plan/strata-layer-and-pod.md`, which is **absent** from that repo's
-  `origin/main` (LEDGER.md, open item O1). Read `LEDGER.md` before changing the vision pass, the
+  `origin/main` (LEDGER.md, open item O1, filed as opencharly/opencharly#556). Read `LEDGER.md` before changing the vision pass, the
   overlay, or `SETUP_OWNED`.
 - **The configuration is the deployment's `env:`** — the engine's own documented variables, renamed
   by nothing — plus `charly-overlay.json`, merged into the volume's run config by
