@@ -132,6 +132,28 @@ if [ -f "$cfg" ] && [ -n "${STRATA_RUN_ARGS:-}" ]; then
     }
 fi
 
+# --- Layer D: the vision pass -----------------------------------------------------------------
+# `VISION` reaches upstream ONLY through the install pass above, which does not run on an installed
+# model -- so on every other start the knob was inert and /health kept answering images: false
+# (ledger V2). And the section it needs is `vision`, a SETUP_OWNED key the two helpers above refuse
+# by design (D11/V3), so no env: overlay can carry it either. This pass is the ONE writer of that
+# section on an existing config: it writes it in setup.py's own shape, fetches the encoder (MODEL
+# data, kept on the volume, never in the image) once, and settles the `lazy_load` pair -- which
+# upstream's settings validator refuses to set to true on a config that reads images
+# (serve/runconfig.py:92; its only call site is the settings-write path). The load path tolerates the
+# pair (measured), so this is contract alignment, not crash-prevention.
+#
+# It runs LAST on purpose: after the overlay and the extra-argv merges, so the invariant it enforces
+# is the one the engine actually reads. A non-zero exit is a CONFIGURATION error and is fatal, the
+# same rule the two merge helpers follow. A missing encoder or no network is NOT an error: the pass
+# prints one line and the server serves text, which is upstream's own posture.
+if [ -f "$cfg" ]; then
+    python3 /opt/strata/charly-vision.py "$cfg" || {
+        echo "[charly] FATAL: the vision pass could not be applied to $cfg" >&2
+        exit 1
+    }
+fi
+
 # --- re-assert the documented invariant (#1244) ----------------------------------------------
 # The launch below passes --config "$cfg" explicitly, so the server does not read this link. It is
 # kept for a settings pass that resolves the image-baked name instead of the volume path.

@@ -35,6 +35,16 @@ this repo. `README.md` is the user overview and never carries agent guidance.
 - **A model never enters the image.** The weights are 37–188 GB and licensed separately (Qwen
   Community License 1.0 / Apache-2.0 / Swift Open License). `/data` is a *named* volume here and a
   host **bind** on the deployment (`host: ~/.local/share/strata`: rootless + XDG, ledger D15/D16).
+- **Pictures are ON by default** (`VISION: cpu`), applied on **every** start by
+  `charly-vision.py` — a charly-owned pass, because upstream writes the run config's `vision`
+  section in `setup.py` and `setup.py` never runs again once the config exists. The encoder
+  **binary** is baked into the image; the encoder **file** (0.9 GB of model data) is fetched once
+  into the model store and reused. A model outside upstream's encoder table must name its own file
+  with `VISION_MMPROJ_URL`: nothing is borrowed silently.
+- **`LEDGER.md` is this repo's decision record.** The D-numbers cited throughout this family point at
+  `opencharly/opencharly`'s `plan/strata-layer-and-pod.md`, which is **absent** from that repo's
+  `origin/main` (LEDGER.md, open item O1). Read `LEDGER.md` before changing the vision pass, the
+  overlay, or `SETUP_OWNED`.
 - **The configuration is the deployment's `env:`** — the engine's own documented variables, renamed
   by nothing — plus `charly-overlay.json`, merged into the volume's run config by
   `charly-merge-config.py`, which **refuses setup-owned keys** (ledger D11). Read the ledger before
