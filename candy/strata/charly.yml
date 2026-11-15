@@ -57,7 +57,9 @@ strata:
             # declaration: Strata has NO CPU-only mode and its engine is compiled with
             # -DSTRATA_ENABLE_CUDA=ON, so nvcc is a BUILD-time requirement (ledger D4).
             - '@github.com/opencharly/layer-nvidia:v2026.314.0708'
-            # Bumped v2026.289.1250 -> v2026.289.1454 -> v2026.289.1504. Two producer fixes, both
+            # Bumped v2026.289.1250 -> v2026.289.1454 -> v2026.289.1504 (historical, 2026-08) and
+            # again to v2026.314.0705 in this change, by `charly box reconcile --remote`. Two
+            # producer fixes motivated the 2026-08 steps, both
             # required before this family can build at all: #9's header-root/subtree/extension repair
             # (layer-cuda#10, tag v2026.289.1454) and nvcc's missing sibling tree /usr/nvvm, without
             # which the backend compiler is not found (layer-cuda#11, tag v2026.289.1504).
