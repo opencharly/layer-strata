@@ -63,13 +63,12 @@ strata:
             # which the backend compiler is not found (layer-cuda#11, tag v2026.289.1504).
             # Producer-first: every tag existed before this pin moved.
             - '@github.com/opencharly/layer-cuda:v2026.314.0705'
-            # NOTE -- distro-cachyos is deliberately NOT bumped to its newest tag (v2026.319.1138).
-            # Part II #3 requires every `distro-*` pin to equal CHARLY's own gitlink, so this pin
-            # follows charly's box/cachyos pin and never the newest tag. Measured 2026-11-15: charly
-            # records box/cachyos at 2edc2ff94c6 (an untagged main commit), so this pin stays at
-            # v2026.290.2137 until charly's own pin lands on a TAGGED release (v2026.319.1138 =
-            # 412c27c, of which 2edc2ff94c6 is an ancestor); only then does `charly box reconcile`
-            # align this pin to that tag. "Newest" is the wrong rule for a `distro-*` pin.
+            # NOTE -- distro-cachyos follows CHARLY's line, never a bare newest-tag bump: Part II #3
+            # requires a `distro-*` pin to track charly's own gitlink. Measured 2026-11-15 (commands
+            # and output pasted in the PR body): charly records box/cachyos at 2edc2ff94c6, which is
+            # an ancestor of v2026.319.1138 = 412c27c, and 2edc2ff94c6's box/crabbox-e2e carries no
+            # dead pod-crabbox ref (grep -c -> 0). v2026.319.1138 is that line's tagged release, so
+            # this pin names a commit any tag-pinned consumer can express.
             # gcc/g++/make/pkg-config for the engine bake. cmake and ninja come from
             # requirements.txt into the venv, so they are deliberately NOT system packages.
             - '@github.com/opencharly/layer-build-toolchain:v2026.314.0704'
