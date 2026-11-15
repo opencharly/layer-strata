@@ -63,12 +63,11 @@ strata:
             # which the backend compiler is not found (layer-cuda#11, tag v2026.289.1504).
             # Producer-first: every tag existed before this pin moved.
             - '@github.com/opencharly/layer-cuda:v2026.314.0705'
-            # NOTE -- distro-cachyos follows CHARLY's line, never a bare newest-tag bump: Part II #3
-            # requires a `distro-*` pin to track charly's own gitlink. Measured 2026-11-15 (commands
-            # and output pasted in the PR body): charly records box/cachyos at 2edc2ff94c6, which is
-            # an ancestor of v2026.319.1138 = 412c27c, and 2edc2ff94c6's box/crabbox-e2e carries no
-            # dead pod-crabbox ref (grep -c -> 0). v2026.319.1138 is that line's tagged release, so
-            # this pin names a commit any tag-pinned consumer can express.
+            # NOTE -- distro-cachyos EQUALS CHARLY's own box/cachyos gitlink, never a newest tag and
+            # never a descendant of it. Part II #3: a `distro-*` pin is judged by its source. Measured
+            # 2026-11-15 (commands and output pasted in the PR body): charly records box/cachyos at
+            # 2edc2ff94c6, that commit is UNTAGGED, so this pin is written as the sha itself, and a
+            # grep of ITS box/crabbox-e2e for the deleted pod-crabbox ref returns 0.
             # gcc/g++/make/pkg-config for the engine bake. cmake and ninja come from
             # requirements.txt into the venv, so they are deliberately NOT system packages.
             - '@github.com/opencharly/layer-build-toolchain:v2026.314.0704'

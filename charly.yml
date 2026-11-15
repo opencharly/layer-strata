@@ -27,8 +27,10 @@ defaults:
         - pac
 import:
     # The CachyOS image family, imported as a namespace so the box can say `base: cachyos.cachyos`.
-    # Pinned to the same tag `layer-openclaw` uses; advanced only by `charly box reconcile`.
-    - cachyos: '@github.com/opencharly/distro-cachyos:v2026.319.1138'
+    # Pinned to CHARLY's own box/cachyos gitlink (a sha, because that commit is untagged), per the
+    # `distro-*` equal-the-gitlink rule documented in candy/strata/charly.yml; advanced only by
+    # `charly box reconcile` once charly's pin itself moves.
+    - cachyos: '@github.com/opencharly/distro-cachyos:2edc2ff94c615f091e8fabc057b87f0d1f29547e'
 discover:
     - path: candy
       recursive: true
