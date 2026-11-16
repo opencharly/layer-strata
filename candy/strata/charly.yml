@@ -56,6 +56,12 @@ strata:
             # The GPU stack is intrinsic, unlike the `ollama` candy's deliberately GPU-agnostic
             # declaration: Strata has NO CPU-only mode and its engine is compiled with
             # -DSTRATA_ENABLE_CUDA=ON, so nvcc is a BUILD-time requirement (ledger D4).
+            # The GPU stack pins must stay at or ahead of the CDI driver-shadowing fix
+            # (opencharly/layer-nvidia#22, opencharly/layer-cuda#19): an image that bakes
+            # nvidia-utils' driver user-space shadows the host's injected NVML and
+            # `nvidia-smi` dies with "Driver/library version mismatch" on any host whose
+            # kernel driver is older than the distro package. These two pins were on the
+            # 2026-314 line, i.e. pre-fix.
             - '@github.com/opencharly/layer-nvidia:v2026.320.1938'
             # Bumped v2026.289.1250 -> v2026.289.1454 -> v2026.289.1504 (historical, 2026-08) and
             # again to v2026.314.0705 in this change, by `charly box reconcile --remote`. Two
