@@ -63,8 +63,11 @@ strata:
             # kernel driver is older than the distro package. These two pins were on the
             # 2026-314 line, i.e. pre-fix.
             - '@github.com/opencharly/layer-nvidia:v2026.320.1938'
-            # Bumped v2026.289.1250 -> v2026.289.1454 -> v2026.289.1504 (historical, 2026-08) and
-            # again to v2026.314.0705 in this change, by `charly box reconcile --remote`. Two
+            # Bumped v2026.289.1250 -> v2026.289.1454 -> v2026.289.1504 (historical, 2026-08),
+            # then to v2026.314.0705 by `charly box reconcile --remote`, and now to
+            # v2026.320.2103 to clear the driver-shadowing line recorded above. The last step
+            # was NOT a reconcile: reconcile targets the newest tag, and this pin is judged by
+            # what the image must contain. Two
             # producer fixes motivated the 2026-08 steps, both
             # required before this family can build at all: #9's header-root/subtree/extension repair
             # (layer-cuda#10, tag v2026.289.1454) and nvcc's missing sibling tree /usr/nvvm, without
