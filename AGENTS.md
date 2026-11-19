@@ -1,7 +1,9 @@
 # AGENTS.md — layer-strata
 
-Strata — the Qwen3.8-Flash-Next inference engine as a charly family: the layer (`candy/strata`),
-the image (`box/strata`) and the bed.
+Strata — the Qwen3.8-Flash-Next inference engine as a charly LAYER (`candy/strata`) and the skill that
+documents it. The POD that composes it — the `strata` image and the disposable GPU bed that proves it —
+lives in **`opencharly/pod-strata`** (opencharly/opencharly#1174). This repo declares no box, no bed and
+no deploy; its one entity is the candy.
 
 The authoritative rulebook is the umbrella `AGENTS.md` in `opencharly/opencharly` — Part I (R0–R10)
 and Part II (the umbrella rules). Do not restate it here; this file adds only what is specific to
@@ -10,20 +12,20 @@ this repo. `README.md` is the user overview and never carries agent guidance.
 ## Load these skills first (R0)
 
 - `/charly-image:layer` — candy authoring (`charly.yml`, plan-step verbs, `var:`, services).
-- `/charly-image:image` — the `candy:` image entries this repo's box uses.
-- `/charly-check:check` — the check verbs, the beds, and the change-class gate.
-- `/charly-pod:pod` — `kind: pod` / deploy schema.
-- `/charly-distros:cachyos` — the base distro behind `pod-cdi`.
+- `/charly-check:check` — the check verbs, the ADE plan contract, and the change-class gate. The
+  bed itself lives in `pod-strata`; the probes it inherits are this candy's.
+- `/charly-internals:cutover-policy` — before any change that renames or deletes a surface here.
 - `/charly-internals:git-workflow` — before any git/PR action.
 
 ## This repo's own skills
 
-- `.agents/skills/strata/SKILL.md` — the headless Strata gateway box: the image that SERVES
-  Qwen3.8-Flash-Next on port 8080. **Read it before changing `box/strata` or probing a deployed
-  gateway.**
 - `.agents/skills/strata-layer/SKILL.md` — the engine layer itself: the pinned release artifacts,
   upstream's container entrypoint, the POD (CDI) contract, the probe helper. **Read it before
   changing `candy/strata`.**
+
+The BOX skill (`/charly-strata:strata`, "the headless Strata gateway") is published from
+`pod-strata`'s `.agents/skills/strata/` — the same family and name, so the ref keeps resolving. Read it
+before probing a deployed gateway; it is not this repo's file.
 
 ## What is unique here
 
@@ -45,10 +47,12 @@ this repo. `README.md` is the user overview and never carries agent guidance.
   older-layout volume, and drains on SIGTERM (`stop_timeout: 120`, upstream's own number). Do not
   reintroduce a charly-owned entrypoint, config merger or vision pass: those were DELETED because the
   runtime contract is upstream's product now (ledger `P3`).
-- **The GPU contract is the POD's, not the VM's.** The image bases on `pod-cdi.pod-cdi` and requires
-  `layer-cdi`; the driver user-space arrives from the host through CDI. **Never add `layer-nvidia`**
-  — a baked driver user-space shadows the injected one (opencharly/layer-cuda#21). `layer-cuda` is
-  not named either: `layer-cdi` requires it, and naming it here would pin one candy twice.
+- **The GPU contract is the POD's, not the VM's.** This candy requires `layer-cdi` (the POD contract,
+  whose own steps fail a build that bakes driver user-space); `pod-strata`'s box supplies the base
+  (`base: pod-cdi.pod-cdi`) and the driver arrives from the host through CDI. **Never add
+  `layer-nvidia`** here — a baked driver user-space shadows the injected one
+  (opencharly/layer-cuda#21). `layer-cuda` is not named either: `layer-cdi` requires it, and naming
+  it here would pin one candy twice.
 - **A model never enters the image.** The weights are 37–188 GB and licensed separately (Qwen
   Community License 1.0 / Apache-2.0 / Swift Open License). `/data` is a *named* volume here and a
   host **bind** on the deployment (`host: ~/.local/share/strata`: rootless + XDG).
@@ -67,23 +71,29 @@ this repo. `README.md` is the user overview and never carries agent guidance.
 - **`LEDGER.md` is this repo's decision record** (`P1`–`P9`, plus the retired `V*` entries and why
   each cannot stand). Read it before changing the artifact source, the entrypoint, the GPU contract,
   the vision default or the context default.
-- **Every probe lives in this candy**, so the beds declare almost no plan of their own (R3): six
+- **Every probe lives in this candy**, so the bed in `pod-strata` declares almost no plan of its own (R3): six
   build-context probes and five runtime probes, and the runtime ones ask the server through ONE
   helper (`/opt/strata/charly-probes.py`, `health`/`models`/`chat`/`vision`) that also never starts or
   configures anything.
 
 ## Build / validate / test
 
-- `charly box validate` at the repo root — the structural check and the change class's pre-flight.
-- `charly box generate strata` — inspect the emitted Containerfile AND its
-  `ai.opencharly.description` label. The plan steps are the artifact the validator reads, so **read
-  them** rather than trusting the source. A multi-line `command:` is emitted into that label
-  verbatim: a folded `>-` scalar inside a `python -c` program is a syntax error you will only see at
-  gate time.
-- The gate for a change here is `charly check run check-strata-gpu-pod` — the family's only bed. It
-  runs the real engine, so it needs the **GPU venue** (a host that can build an image and has a card
-  the CDI spec reaches) and a **provisioned model store**, and is therefore run on demand rather
-  than in the default roster.
+- `charly box validate` at the repo root — the structural check and the change class's pre-flight. It
+  checks the CANDY; this repo has nothing else to check locally, and the image it feeds is built and
+  gated in `pod-strata`.
+- A change here that alters what the image CONTAINS or what the bed asserts must be proved in
+  `pod-strata` (its `check-strata-gpu-pod` bed, on the GPU venue) before it lands here — the candy is
+  the producer in that sequence, so the consumer's pin moves to this repo's tag afterwards.
+- **In `pod-strata`**, `charly box generate strata` inspects the emitted Containerfile AND its
+  `ai.opencharly.description` label — the box is that repo's now, so the command runs there. The plan
+  steps are the artifact the validator reads, so **read them** rather than trusting the source; a
+  multi-line `command:` is emitted into that label verbatim, and a folded `>-` scalar inside a
+  `python -c` program is a syntax error you will only see at gate time. The candy's own steps are
+  still written here, so read the label where it is emitted, not where it is authored.
+- The family's only bed is `pod-strata`'s `check-strata-gpu-pod` (`strata.check-strata-gpu-pod` from
+  the umbrella). It runs the real engine, so it needs the **GPU venue** and a **provisioned model
+  store**, and is run on demand rather than in the default roster. This repo's own gate for a
+  layer change is `charly box validate` plus that bed, cited from the consumer's PR.
 - The first start may MOVE an operator's store (`/data/models|packs|mtp` →
   `/data/Strata-data/…`, rename-only, idempotent) and may re-fetch the encoder. Record what actually
   happened in the PR body; never "fix" it by hand.

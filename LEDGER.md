@@ -264,8 +264,12 @@ other.
 
 ## P8 — The two standing postures, now enforced by other means
 
-**Rootless.** No privileged container, no root-owned host path, no `sudo`. The runtime is uid 1000;
-the GPU arrives as a CDI device; the store is a host bind under the operator's XDG data directory.
+**Rootless.** No privileged container, no root-owned host path, no `sudo`; the GPU arrives as a CDI
+device and the store is a host bind under the operator's XDG data directory. The workload's uid is
+1000 in the image, and container **0** on a POD deploy — under `userns=host` the container's root is
+the invoking host user, and that is the only mapping under which a host-owned bind stays writable
+while the CDI file mounts resolve (`plugin-deploy-pod#81`: an idmapped mount needs `CAP_SYS_ADMIN`
+in the userns owning the filesystem's superblock, which no rootless container can hold).
 The image grants `a+rX` on `/opt/strata` instead of a `chown`, because nothing in that tree is
 written at run time and a `chown` would hardcode a uid that `user_policy` can move.
 
@@ -320,6 +324,7 @@ differs from the engine's own 32768 recommendation for that card, so the asserti
 | `STRATA_RUN_ARGS`, `STRATA_OVERLAY_JSON`, `LOW_RAM`, `STRATA_MEMORY_LIMIT_MIB`, `REINSTALL`, `KV_STREAMING`, `RESIDENT_BUDGET_GIB`, `LAYER_SPLIT`, `HOST`, `GGUF_DIR`, `STRATA_DATA`, `STRATA_ENGINE`, `STRATA_API_KEY` | retired by upstream or by this cutover (`P6`, `P7`) |
 | `/data/config/strata-<model>.json` as THE run config | the run settings live in `/data/install/`, the presets in `/data/state/` (`P3`) |
 | `O1` — the cited `D1–D16` ledger absent from `origin/main` | still open as opencharly/opencharly#556; the D-numbers it names are gone from this repo with the compile path |
+| `box/strata`, the root bed `check-strata-gpu-pod`, the box skill and the image `defaults:` | MOVED, not retired: they live in `opencharly/pod-strata` (opencharly/opencharly#1174). `P4` above records the decision as taken HERE, which is history and stays true; this repo keeps the candy, the layer skill and this ledger. |
 
 ---
 
@@ -336,12 +341,17 @@ differs from the engine's own 32768 recommendation for that card, so the asserti
 
 ## How this change is gated
 
-1. **Build context, no card needed** — `charly box validate`, `charly box generate strata` (the
-   emitted Containerfile and its `ai.opencharly.description` label are the artifact, and are READ),
-   `charly box build strata`, then the candy's six build probes, which include upstream's own
-   component verifier.
-2. **The live bed** — `charly check run check-strata-gpu-pod` on this venue: the real engine, the
-   provisioned store, the CDI-injected card, the key gate, a real picture and a completion.
+This is how the cutover WAS gated, at the revision this ledger records. The box and the bed now live
+in `opencharly/pod-strata`, so every command naming `strata` as a BOX or a BED runs THERE; what runs in
+this repo is `charly box validate` alone, and it checks the candy.
+
+1. **Build context, no card needed** — `charly box validate` (here), `charly box generate strata` (in
+   `pod-strata`: the emitted Containerfile and its `ai.opencharly.description` label are the artifact,
+   and are READ), `charly box build strata` (there), then the candy's six build probes, which include
+   upstream's own component verifier.
+2. **The live bed** — `charly check run check-strata-gpu-pod` (in `pod-strata`) on the GPU venue: the
+   real engine, the provisioned store, the CDI-injected card, the key gate, a real picture and a
+   completion. Its PASS at `2026.323.1728` and `2026.323.1759` is the witness this cutover cites.
 
 Every probe this change adds names an artifact that does not exist on the pre-change tree
 (`/opt/strata/terminal/`, `/opt/strata/components/engine/`, `entrypoint.sh`, `strata --version`

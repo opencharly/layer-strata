@@ -10,7 +10,8 @@ description: 'The `strata` LAYER — the engine itself: installed from upstream'
 
 # strata-layer
 
-The engine layer behind `box/strata`. Since upstream **v0.2.16** it installs the two artifacts
+The engine layer behind the `strata` POD image (`opencharly/pod-strata`, `box/strata`). Since
+upstream **v0.2.16** it installs the two artifacts
 upstream PUBLISHES — the Terminal (a bundled CPython + the `strata` CLI) and a signed,
 self-contained engine COMPONENT — and runs them through upstream's own `tools/docker/entrypoint.sh`.
 Nothing is compiled, so the image needs no CUDA toolkit, no `nvcc` and no driver user-space:
@@ -115,7 +116,10 @@ a build context must be able to do — build without a card.
   Upstream still mints its own key when it is handed none, keeps it in `/data/state/api-key`
   (`strata launch --show-key --preset docker`), and warns when a key is shorter than 16
   characters.
-- **The container needs read+execute on `/opt/strata`** for uid 1000, which owns nothing there.
+- **The container needs read+execute on `/opt/strata`** for the runtime uid, which owns nothing
+there — uid 1000 in the image, and container uid **0** on a POD deploy, where `userns=host` maps the
+container's root to the invoking host user (the only mapping that keeps a host-owned bind writable
+while the CDI file mounts resolve).
   The layer grants `a+rX` rather than a `chown`: nothing in the tree is written at run time
   (the Terminal's CPython compiles nothing — its `.pyc` files ship in the archive), and a `chown`
   would hardcode a uid that `user_policy` can move.
