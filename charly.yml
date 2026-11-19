@@ -11,14 +11,11 @@ defaults:
     #
     # Without it the BUILD tags the image `localhost/strata:<check-tag>` while the pod deploy resolves
     # `ghcr.io/opencharly/strata:<check-tag>`, so the deploy cannot see the freshly built image and tries
-    # to pull it instead. Measured on a full bed run (image-build PASS 17m7s, check-image PASS 39/0,
-    # deploy-add PASS, then `charly config: unable to copy from source
-    # docker://ghcr.io/opencharly/strata:check-strata-gpu-pod-…`). Invisible to `box validate`, to `box
-    # generate`, to the image build and to all thirty-nine image checks: every one of them works on the
-    # locally-tagged artifact, and only the deploy compares the built identity with the deployed one.
-    # Declared to parity with the working sibling family repo (`layer-openclaw`), which is what the
-    # comparison keeps proving: `platform: [linux/amd64]` + a pac-based build. Its `builder:` block is
-    # deliberately NOT copied — that selects pixi/npm multi-stage builders this box does not use.
+    # to pull it instead. Measured on a full bed run (image-build PASS, check-image PASS, deploy-add PASS,
+    # then `charly config: unable to copy from source docker://ghcr.io/opencharly/strata:check-strata-gpu-pod-…`).
+    # Invisible to `box validate`, to `box generate`, to the image build and to every image check: every
+    # one of them works on the locally-tagged artifact, and only the deploy compares the built identity
+    # with the deployed one.
     platform:
         - linux/amd64
     tag: auto
@@ -26,221 +23,168 @@ defaults:
     build:
         - pac
 import:
-    # The CachyOS image family, imported as a namespace so the box can say `base: cachyos.cachyos`.
-    # This pin is SET MANUALLY to CHARLY's own box/cachyos gitlink (a sha, because that commit is
-    # untagged), per the `distro-*` equal-the-gitlink rule documented in candy/strata/charly.yml.
-    # `charly box reconcile --remote` must NOT be applied to it: reconcile's target is a newest tag,
-    # and "newest" is the wrong rule for a `distro-*` pin.
-    - cachyos: '@github.com/opencharly/distro-cachyos:2edc2ff94c615f091e8fabc057b87f0d1f29547e'
+    # The POD GPU contract, imported as a namespace so the image can say `base: pod-cdi.pod-cdi`.
+    # This is the change of the v0.2.16 cutover (ledger `P4`): the family used to import the CachyOS
+    # distro family and base on `cachyos.cachyos` — a VM-contract GPU base whose driver user-space is
+    # baked into the image, on an image that is deployed as a POD. `pod-cdi` holds the other side:
+    # nothing nvidia-baked, the driver injected through CDI per container.
+    #
+    # A MERGED tag, never a branch: this pin is an EDGE (it is judged by the release it names, and the
+    # release's own `require:` decides which `layer-cuda` strip the toolkit gets). Its box declares the
+    # pac/pixi builder map it needs and bases on the upstream CachyOS OCI digest directly, so importing
+    # it here adds no distro pin this repo has to keep in step — deliberately, because a `distro-*` pin
+    # is judged by its source and this repo no longer needs one.
+    - pod-cdi: '@github.com/opencharly/pod-cdi:v2026.323.1302'
 discover:
     - path: candy
       recursive: true
     - path: box
       recursive: true
 
-# check-strata-gpu-pod is the family's ONLY bed: PR #6 withdrew the GPU-free mock bed. It is the
-# real-engine witness and needs the GPU venue plus a provisioned 40+ GB model store, so it is run
-# on demand rather than in the default roster. `STRATA_ENGINE=mock` remains a RUNTIME posture of
-# the candy, not a bed; a consumer's box inherits the candy's probes without another bed.
-# check-strata-gpu-pod — the family's REAL-engine witness.
+# check-strata-gpu-pod — the family's REAL-engine witness, and its ONLY bed.
 #
-# This is the only bed that exercises the compiled engine, the page-locking path, the multi-GB
-# model load and the actual API round-trip. It therefore needs two things the deterministic bed
-# does not: the GPU venue (`requires_shared: [nvidia-gpu]` -> CDI, with the arbiter flipping the
-# card vfio->nvidia and back) and a PROVISIONED model store, so that a test bed never downloads
-# 37-188 GB.
+# It exercises what no build-context check can: the released engine COMPONENT resolving against the
+# driver a container actually received, the multi-GB model load, the run settings the entrypoint derived
+# from the deployment's env, and real API round-trips through the key gate. It therefore needs two things
+# a deterministic bed would not: the GPU venue (`requires_shared: [nvidia-gpu]`, so the arbiter attaches
+# the CDI device) and a PROVISIONED model store, so that a test bed never downloads 37-188 GB.
 #
-# It is deliberately NOT in the default roster (operator decision, ledger §9 #8): a card-less host
-# would otherwise skip or fail this bed on every unrelated run. The umbrella's `check-all-beds`
-# excludes it; it is run on demand with `charly check run <ns>.check-strata-gpu-pod`.
+# It is deliberately NOT in the default roster: a card-less host would otherwise skip or fail this bed on
+# every unrelated run. The umbrella's `check-all-beds` excludes it; it is run on demand with
+# `charly check run <ns>.check-strata-gpu-pod`.
 #
-# It carries the candy's baked probes plus its own runtime checks (the env -> config projection,
-# the engine-versus-stamp check, the pictures-on DEFAULT the candy's vision pass must produce, and
-# the STRATA_RUN_ARGS surface).
+# WHAT THE FIRST START DOES TO THE STORE, once (upstream's own idempotent migration;
+# LEDGER.md, "Open risks (the first start does these; they are not defects to hide)"):
+#   /data/models, /data/packs, /data/mtp  ->  /data/Strata-data/{models,packs,mtp}
+# a rename inside the volume (no copy, nothing downloaded again). It is a ONE-WAY DOOR for a rollback to
+# a v0.1.x image, which reads `/data/models`; see the PR body's rollback line. `/data/vision` is NOT in
+# the move list, so a pictures-on first start fetches the encoder again (~0.9 GB).
 check-strata-gpu-pod:
     pod:
         image: strata
         disposable: true
         lifecycle: dev
         # A GPU-CDI POD claims the REFCOUNTED axis: requires_shared flips the IOMMU group
-        # vfio->nvidia+CDI at this bed's deploy and back only when the LAST claimant
-        # releases. requires_exclusive is the VM/sole-use axis and asks for the flip TO
-        # vfio -- measured 2026-10-17: declaring it on this pod made the arbiter try a
-        # vfio switch, which a live desktop session (Hyprland) correctly refused.
+        # vfio->nvidia+CDI at this bed's deploy and back only when the LAST claimant releases.
+        # requires_exclusive is the VM/sole-use axis and asks for the flip TO vfio -- measured
+        # 2026-10-17: declaring it on this pod made the arbiter try a vfio switch, which a live
+        # desktop session (Hyprland) correctly refused.
         requires_shared: [nvidia-gpu]
         description: >-
-            Sole proof the REAL engine serves: the baked engine loads a provisioned model store on a
-            card that arrived through CDI, the config projection is what the deployment asked for,
-            pictures are ON by the candy's own default, a real PNG round-trips through the encoder,
-            and a completion round-trips. Needs the GPU venue and the encoder file in the store; run
-            on demand, never in the default roster.
+            Sole proof the REAL engine serves: the released engine component resolves usable and signed
+            against the CDI-injected driver, the model loads from a provisioned store, the run settings
+            the entrypoint derived are what the deployment asked for, pictures are ON by the candy's own
+            default (a real PNG round-trips), and a completion round-trips through the key gate. Needs
+            the GPU venue and the pre-staged GGUF shards; run on demand, never in the default roster.
         env:
+            # The provisioned model on this venue, named the way upstream's entrypoint reads it. No
+            # VISION here on purpose: the pictures-on assertion below must be the CANDY's default, not
+            # a value this bed set (a bed that pinned it would pass with the default broken).
             FAMILY: qwen
             MODEL: IQ2_XS
+            # The store's own shards, at the path upstream's FIRST-START MIGRATION creates: the
+            # entrypoint moves /data/models -> /data/Strata-data/models BEFORE it validates MODEL_PATH,
+            # so this path exists by the time it is checked. A folder with no `*.gguf` directly in it
+            # stops the start with an explicit message rather than downloading — the honest failure,
+            # quoted verbatim in the PR body if it fires.
+            MODEL_PATH: /data/Strata-data/models/IQ2_XS
             # Deliberately ABOVE the engine's own recommendation for this card, so the projection
-            # assertion below can actually FAIL: `own_path_context` returns 32768 at <=16.5 GB of
-            # VRAM and the venue's RTX 4080 measures 15.99 GB (65536 is its bracket only from
-            # 16.5 GB; 131072 above 24.5 GB).
+            # assertion can actually FAIL: on the venue's RTX 4080 SUPER (15.99 GB) the recommendation
+            # is 32768.
             CONTEXT: "65536"
-            KV: k8v4
-            GPU: "0"
-            # Never `on` here: the venue has no container memory cap, and forcing the low-RAM path
-            # would test the slow engine instead of the one people deploy.
-            LOW_RAM: auto
-            # The cgroup-aware server limit, in MiB (56 GiB of the 64 GB venue).
-            STRATA_MEMORY_LIMIT_MIB: "57344"
-            # Weights that are already on the venue: the bed never downloads them. (The encoder file
-            # is store data beside them, and is the one thing the first start may fetch -- see the
-            # venue-precondition note below.)
-            GGUF_DIR: /gguf
-            # Prove the Layer-C surface: the deployment's extra argv must reach the run config.
-            STRATA_RUN_ARGS: "--vram-reserve-mib 832"
         volume:
-            # Pre-existing GGUF files, read-write because the first start writes <shard>.done markers.
-            # The provisioned shards live in models/<MODEL>/ on the venue store; gguf/<MODEL>/ exists but is
-            # empty here, and binding it made the engine start and report `loaded: false` with
-            # "--native /gguf/<shard>: missing model shard" in its own log. Measured 2026-10-19.
-            - {name: gguf, type: bind, host: ~/.local/share/strata/models/IQ2_XS, path: /gguf}
-            # The prepared pack, the MTP layer and the CONFIG live in the host store already: binding it
-            # is what makes the launch skip the installer. As a named volume /data starts EMPTY, so the
-            # entrypoint takes its install path and dies writing the read-only /opt/strata/.venv
-            # ("PermissionError: .strata-pip.json" -> supervisord FATAL -> no listener; ledger §94-§97).
+            # The operator's model store, mounted at /data — the whole store, not a sub-folder: the
+            # entrypoint's migration, the presets, the run settings, the packs, the encoder and the key
+            # all live under it, and a candy can never pin a host path (`~` is expanded by charly).
             - {name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}
-        secret:
-            - name: STRATA_API_KEY
-        # VENUE PRECONDITION (measured 2026-10-17): this bed names a specific venue and never downloads
-        # WEIGHTS. `GGUF_DIR: /gguf` binds `~/.local/share/strata/gguf/IQ2_XS`, and the weights must
-        # already be there; the ledger names the venue (`cachyos-gpu-workstation-vm`: 64G/12cpu/1T,
-        # RTX 40 -> arch 89). A host with the matching card but no staged GGUF — host `a` has an
-        # RTX 4080 SUPER and an empty store — cannot run it. Stating it here because "run on demand"
-        # otherwise reads as "runnable anywhere".
+        # No `secret:` entry here on purpose. `API_KEY` is declared `secret_require` by the CANDY, which
+        # is where the keyed posture belongs: `charly config` mints a value for it and the unit carries
+        # `Secret=<name>,type=env,target=API_KEY`. A deploy-level entry would be a second declaration of
+        # the same secret, and (measured) one whose name has no stored value injects NOTHING — it would
+        # read as "the keyed posture is under test" while testing the keyless branch.
+        # VENUE PRECONDITION: this bed names a specific venue and never downloads WEIGHTS. The store must
+        # already hold the model's shards (IQ2_XS: two .gguf files, ~66 GB) — a host with the card but an
+        # empty store cannot run it. Stating it here because "run on demand" otherwise reads as
+        # "runnable anywhere". The encoder file for pictures (~0.9 GB) is the ONE thing the first start
+        # may fetch; network is available on the venue and the fetch is upstream's.
         #
-        # PICTURES add a second store precondition (2026-10-21). The encoder SOFTWARE is baked into the
-        # image (`/opt/strata/engine/strata-vision`, 222 MB), but the encoder DATA FILE is model data
-        # (about 907 MB) and lives BESIDE the weights in the model store — under `/data/vision/`, which
-        # is `~/.local/share/strata/vision/` on this venue — or is downloaded ONCE on the first start.
-        # It never enters the image: it is licensed with the weights and too large to duplicate per
-        # image. The vision pass degrades LOUDLY and not silently (one line, pictures off, text still
-        # served) when the file is neither present nor reachable, so a venue without it does not crash
-        # the bed — it fails the pictures-on assertions below, which is the honest outcome.
-        # The projection's VALUES, asserted only here: this bed builds a real run config from the
-        # deployment's env: (the deterministic bed cannot -- its scripted engine starts with no config,
-        # so its /health reports the engine defaults and an equality assertion there could not fail).
-        # CONTEXT is deliberately 65536, NOT the engine's 32768 default, so this fails if the
-        # env -> config -> server chain ever breaks.
+        # Every assertion below is a REAL boundary, not an internal file name: the projection the server
+        # publishes, the load the engine reports, one picture round-trip and one completion. The store's
+        # own layout is upstream's business — the v0.1.x run config under /data/config is not read by
+        # this image at all, and asserting on it would be asserting on a file that is now history.
         plan:
-            - check: /health reports the context this deployment asked for, not an engine default
+            - check: /health reports the context this deployment asked for, and pictures by DEFAULT
               id: strata-gpu-projection
               context: [runtime]
+              timeout: 5500s
               exit_status: 0
-              # The expectation is the literal this bed declares above (CONTEXT: "65536"), not a
-              # reference to the CONTEXT variable: the check-var resolver does not see the pod env,
-              # so a braced reference was skipped as unresolved -- an assertion silently absent. The
-              # probe runs in-container (command: defaults to podman exec), so it dials the container
-              # port, not HOST_PORT.
-              command: >-
-                  python3 -c "import json,sys,urllib.request;
-                  h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
-                  sys.exit(0 if str(h.get('max_context'))=='65536' else 1)"
-            - check: "the engine binary reports the version its stamp records (a stamp can lie -- upstream #2054)"
-              id: strata-gpu-engine-version
+              # The expectation is the literal this bed declares above, not a reference to a variable:
+              # the check-var resolver does not see the pod env, so a braced reference is SKIPPED as
+              # unresolved — an assertion silently absent. 65536 differs from the engine's own 32768
+              # recommendation for this card, so it can actually fail.
+              #
+              # `images=true` is asserted here with NO vision variable in the bed's env, which is what
+              # makes it the FAMILY default (the candy's `VISION: cpu`) rather than a value the bed
+              # imposed. `eventually` is the documented poll-until-pass matcher, not a sleep: the first
+              # start may migrate a ~150 GB store, re-derive the run settings and fetch the picture
+              # reader, and each failed pass reports its attempt count and elapsed time instead of a
+              # bare timeout. The probe is the candy's own helper, so the projection is read by one
+              # implementation on every deployment (R2).
+              eventually: "5400s"
+              retry_interval: "30s"
+              command: /opt/strata/terminal/python/bin/python3 /opt/strata/charly-probes.py health max_context=65536 images=true
+            - check: the engine process is alive and the model is loaded, not merely listening
+              id: strata-gpu-loaded
               context: [runtime]
+              timeout: 3700s
               exit_status: 0
-              # Lives HERE, not in the candy: the binary loads libcuda, which CDI injects only at
-              # runtime on a device-bearing host. It is the check that catches a stamp written over a
-              # failed build -- exactly what upstream #2054 measured -- and it can only run where the
-              # engine can actually load.
-              command: >-
-                  python3 -c "import json,subprocess,sys; m=json.load(open('/opt/strata/engine/BUILD.json'));
-                  out=subprocess.run(['/opt/strata/engine/strata','--version'],capture_output=True,text=True).stdout;
-                  sys.exit(0 if str(m.get('version','')) in out else 1)"
-            - check: and pictures are ON by the deployment DEFAULT, not by anything this bed set
-              id: strata-gpu-images
-              context: [runtime]
-              exit_status: 0
-              # The bed deliberately sets NO vision variable, so this asserts the CANDY's default
-              # posture: the charly vision pass writes the setup-owned vision section into the volume
-              # run config on EVERY start, and the server then publishes the engine's own answer on
-              # /health. A bed that pinned the variable would pass with the pass broken, which is
-              # exactly the silent-ignore this change removes. Literalised for the same two reasons
-              # as the projection step: the check-var resolver does not see the pod env, and the
-              # in-container probe dials the container port, not the published host port.
-              command: >-
-                  python3 -c "import json,sys,urllib.request;
-                  h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
-                  sys.exit(0 if h.get('images') is True else 1)"
-            - check: the volume run config carries the vision section that flag comes from
-              id: strata-gpu-vision-config
-              context: [runtime]
-              exit_status: 0
-              # The config path is the bed's MODEL (IQ2_XS) lowercased by the entrypoint's own
-              # `strata-<model>.json` rule -- the same literal the run-args step uses, because the
-              # check-var resolver does not see the pod env. The probe runs in-container (command
-              # defaults to podman exec), so it reads the VOLUME config, not the host store.
-              # `lazy_load` is asserted NOT TRUE rather than left unchecked because upstream's settings
-              # validator refuses that pair (serve/runconfig.py:92): a vision section beside lazy
-              # loading is a config upstream's own API declines to write, so the vision pass turns it
-              # off and the flag on /health and this pair must agree. The
-              # encoder DATA path is asserted too, because it is the half that must NOT be in the
-              # image: an mmproj path outside the model store is a config pointing at model data this
-              # family deliberately does not bake. The next step follows the section's exe to the
-              # artifact it names.
-              command: >-
-                  python3 -c "import json,sys;
-                  c=json.load(open('/data/config/strata-iq2_xs.json')); v=c.get('vision');
-                  sys.exit(0 if isinstance(v,dict) and v.get('gpu') is False
-                  and c.get('lazy_load') is not True
-                  and str(v.get('mmproj','')).startswith('/data/vision/') else 1)"
-            - check: the encoder the config names is the one baked into this image, stamped for this engine
-              id: strata-gpu-vision-binary
-              context: [runtime]
-              exit_status: 0
-              # Two facts and the link between them. The section's exe is followed to the ARTIFACT: a
-              # config naming an encoder the image does not carry would be a config that lies, and
-              # executability as the SERVING USER is the property the build context cannot see (the
-              # candy hands the whole tree to uid 1000 at build time). The stamp beside it is written
-              # LAST by the bake, after both binaries, so a stamp recording "none" means the build
-              # skipped the encoder while the config asks for pictures -- and a stamp that lies after
-              # a failed build is the failure upstream #2054 measured.
-              command: >-
-                  python3 -c "import json,os,sys;
-                  v=json.load(open('/data/config/strata-iq2_xs.json')).get('vision') or {};
-                  exe=str(v.get('exe','')); m=json.load(open('/opt/strata/engine/BUILD.json'));
-                  sys.exit(0 if exe=='/opt/strata/engine/strata-vision' and os.access(exe,os.R_OK|os.X_OK)
-                  and m.get('vision') not in (None,'','none') else 1)"
+              # `loaded` is the server's own answer to "is the engine up" (serve/server.py), so this
+              # separates "the HTTP server answers" from "the weights are in memory". With pictures on,
+              # upstream cannot lazy-load the model (its settings validator refuses the pair), so the
+              # load happens at container start and this step is the witness that it completed.
+              eventually: "3600s"
+              retry_interval: "30s"
+              command: /opt/strata/terminal/python/bin/python3 /opt/strata/charly-probes.py health loaded=true
             - check: a real picture round-trips and the answer names the colour
               id: strata-gpu-vision-roundtrip
               context: [runtime]
+              timeout: 1900s
               exit_status: 0
-              # The only assertion here that a config inspection cannot fake: it builds a real PNG in
-              # the container (python3 zlib+struct, so no imaging library and nothing new installed),
-              # posts it as a base64 data URL, and requires the colour word in the answer.
-              # `eventually` is the documented poll-until-pass matcher, not a sleep: the engine loads
-              # the weights and the encoder at start, which can take minutes on this venue, and the
-              # FIRST pass returns immediately, reporting its attempt count instead of a bare timeout.
-              # max_tokens 48 with reasoning_effort none is the measured pair that yields content
-              # rather than a truncated null (the trap the candy's completion probe records). The
-              # probe runs in-container, so the port is the container's own, not the host port.
-              eventually: "900s"
-              retry_interval: "15s"
-              command: >-
-                  python3 -c "import base64,json,os,struct,sys,urllib.request,zlib;
-                  w=h=64; raw=b''.join(b'\x00'+bytes((255,0,0))*w for _ in range(h));
-                  chunk=lambda t,d: struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)&0xffffffff);
-                  png=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(raw,9))+chunk(b'IEND',b'');
-                  url='data:image/png;base64,'+base64.b64encode(png).decode();
-                  body=json.dumps({'model':'strata','messages':[{'role':'user','content':[{'type':'text','text':'What colour is this image? Answer with one word.'},{'type':'image_url','image_url':{'url':url}}]}],'max_tokens':48,'reasoning_effort':'none'}).encode();
-                  r=urllib.request.Request('http://127.0.0.1:8080/v1/chat/completions',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
-                  c=json.load(urllib.request.urlopen(r))['choices'][0];
-                  sys.exit(0 if 'red' in (c['message'].get('content') or '').lower() else 1)"
-            - check: the deployment's STRATA_RUN_ARGS reached the run config's argv
-              id: strata-gpu-run-args
+              # The only assertion here that a config inspection cannot fake: the helper builds a real
+              # 64x64 red PNG in the container (zlib+struct, so no imaging library and nothing new
+              # installed), posts it as a base64 data URL and requires the colour word in the answer.
+              # It is also the end-to-end proof of the ENCODER: the `strata-vision` binary is in the
+              # image (the candy's `strata-vision-binary` asserts that) and the encoder FILE is model
+              # data fetched once into the store, so a venue without it fails here rather than silently
+              # serving text.
+              eventually: "1800s"
+              retry_interval: "30s"
+              command: /opt/strata/terminal/python/bin/python3 /opt/strata/charly-probes.py vision
+            - check: the pod runs the engine build this repo pins, as the mapped runtime user
+              id: strata-gpu-terminal
               context: [runtime]
+              timeout: 300s
               exit_status: 0
-              # The config path is the bed's MODEL (IQ2_XS) lowercased by the entrypoint's own
-              # `strata-<model>.json` rule. The probe runs in-container (command defaults to
-              # podman exec), so it reads the VOLUME config, not the host store.
-              command: >-
-                  python3 -c "import json,sys;
-                  a=json.load(open('/data/config/strata-iq2_xs.json')).get('args',[]);
-                  sys.exit(0 if '--vram-reserve-mib' in a and a[a.index('--vram-reserve-mib')+1]=='832' else 1)"
+              # The Terminal executes INSIDE the pod (the first thing anyone runs by hand), and it
+              # reports the build it carries — 0.1.62 is the pinned `STRATA_ENGINE_VERSION`, so a repin
+              # that did not move this line fails here. The literal is stated rather than resolved for
+              # the same reason as the projection step.
+              #
+              # THE IDENTITY IS uid 0, AND THAT IS NOT A ROOT ESCALATION. A unit that carries a CDI GPU
+              # device is emitted `userns=host` + `User=0:0` (opencharly/plugin-deploy-pod#81/#82),
+              # because the kernel's idmapped-mount path needs CAP_SYS_ADMIN in the user namespace that
+              # owns the filesystem's superblock and a rootless container cannot idmap HOST files. Under
+              # `userns=host` a rootless container's uid 0 IS the invoking host user: measured on this
+              # image, a file created in the bind lands on the host as 1000:1000 and `podman info`
+              # reports `rootless=true`. So the assertion is uid 0 — asserting 1000 would be a check
+              # about the SUBSTRATE's mapping rather than about this image, and it would flip the day a
+              # substrate legitimately changes it (which is exactly what happened to this line).
+              command: |
+                  /opt/strata/terminal/python/bin/python3 - <<'PY'
+                  import os, subprocess, sys
+                  out = subprocess.run(["/opt/strata/terminal/bin/strata", "--version"],
+                                       capture_output=True, text=True).stdout.strip()
+                  print(out, "| uid", os.getuid())
+                  ok = (out.startswith("strata 0.2.16") and "build 0.1.62" in out and os.getuid() == 0)
+                  sys.exit(0 if ok else 1)
+                  PY

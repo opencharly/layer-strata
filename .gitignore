@@ -8,3 +8,7 @@ __pycache__/
 # distro-fedora carry the identical three lines.
 .containerignore
 .dockerignore
+
+# `charly check run` writes each bed's evidence here (summary.yml, per-step logs, recordings).
+# The org convention is to ignore the tree, not to commit it — distro-cachyos carries the same line.
+.check/

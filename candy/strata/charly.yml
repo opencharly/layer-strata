@@ -1,512 +1,716 @@
 strata:
     candy:
-        # Strata — the Qwen3.8-Flash-Next inference engine, as a rootless OpenCharly layer.
+        # Strata — the Qwen3.8-Flash-Next inference engine, as a rootless OpenCharly LAYER.
         #
-        # Everything below follows three ledger decisions that were settled with the operator on
-        # 2026-10-16 (opencharly/opencharly, plan/strata-layer-and-pod.md): the engine is BAKED at
-        # image build so the first start never compiles it (D6), the model store is a host path the
-        # operator defines under their XDG data directory (D15/D16), and the configuration is
-        # charly.yml fields plus a charly-authored overlay merged by mechanism (a) (D12).
+        # The layer's one job is unchanged from ledger `P1`: the engine is IN THE IMAGE, so a fresh
+        # volume's first start never compiles it. What changed at upstream v0.2.16 is HOW it gets
+        # there. Upstream now PUBLISHES the compiled artifacts — the Terminal (a bundled CPython +
+        # the `strata` CLI, one archive) and a signed, self-contained engine COMPONENT (CUDA 13,
+        # bundling `libcudart`/`libcublas`/`libcublasLt` and the `strata-vision` encoder) — and its
+        # own container image installs exactly those two archives plus `tools/docker/`. This candy
+        # does the same, from the same pinned release, so the layer IS upstream's product surface
+        # and not a second implementation of it (R2/R4).
         #
-        # The pictures-on-by-default change (2026-10-21) has its decisions in THIS repo's `LEDGER.md`
-        # (V1-V8) rather than in that plan document, which is referenced throughout this family but
-        # is ABSENT from opencharly/opencharly's origin/main -- recorded as open item O1 in LEDGER.md
-        # and filed as opencharly/opencharly#556,
-        # because a citation that cannot be resolved is a stale claim, not a reference.
+        # Two consequences a consumer should know before changing anything here:
+        #
+        #   - **No compile path, and therefore no GPU toolkit requirement.** The old candy compiled
+        #     the engine with nvcc, so it composed the VM-contract GPU stack (`layer-nvidia` +
+        #     `layer-cuda`, driver user-space baked into the image). A pod does not own its driver:
+        #     the kernel module is host-global and the toolkit's CDI spec injects the user-space per
+        #     container. This candy therefore requires `layer-cdi` (the POD contract, whose own plan
+        #     steps FAIL the build if any host-coupled driver library is baked) and nothing of the
+        #     VM stack — the image is a POD-contract image by itself, and a plain-cachyos base plus
+        #     this candy is a valid GPU pod (ledger `P4`). `layer-cuda` arrives transitively through
+        #     `layer-cdi`'s own `require:`; naming it here too would pin the same candy twice in one
+        #     scope, which is a hard refusal.
+        #   - **The runtime is upstream's entrypoint, not charly's scripts.** `charly-entrypoint.sh`,
+        #     `charly-vision.py`, `charly-merge-config.py`, `charly-merge-args.py` and
+        #     `charly-build-engine.py` are DELETED: config presets, `STRATA_SET`, the vision pass,
+        #     the `/data/Strata-data` layout and the API-key rule are upstream's product, and the
+        #     second implementation charly carried was the part that kept failing silently (ledger
+        #     `P3`).
         description: |
-            Strata — the Qwen3.8-Flash-Next inference engine (125B MoE) serving an OpenAI- and
-            Anthropic-compatible API on port 8080, with the engine compiled INTO THE IMAGE exactly
-            the way upstream's own Dockerfile compiles it.
+            Strata — the Qwen3.8-Flash-Next inference engine (125B MoE) serving an OpenAI-,
+            Anthropic- and Responses-compatible API on port 8080, installed from upstream's
+            PUBLISHED release artifacts so the first start never compiles anything.
 
-            Four properties matter to a consumer:
+            Five properties matter to a consumer:
 
-            - **The engine is baked, so the first start never compiles.** `engine/BUILD.json`
-              records `source: "local"` with the matching source hash, which is what makes
-              `setup.py` reuse the engine instead of rebuilding it. The stamp is written only
-              after a successful build AND the runtime checks the binary self-reports the stamped
-              version, because upstream #2054 shows a *failed* build can leave a stamp that lies.
-            - **Pictures are on by default.** `VISION: cpu` reads images with the image encoder on
-              the CPU (nothing is taken from the card), and the charly vision pass applies it on
-              EVERY start — not only the first, because the run config's `vision` section is written
-              by `setup.py`, which never runs again once the config exists. `VISION: gpu` reads them
-              on the card, `VISION: no` turns them off. The encoder BINARY is baked into the image;
-              the encoder FILE (0.9 GB of model data) is fetched once into the model store and reused.
+            - **The released artifacts are pinned, and both carries a digest.** The Terminal
+              (`strata-control-<engine>-linux-x86_64.tar.gz`) and the engine COMPONENT
+              (`strata-engine-<engine>-linux-x86_64-cuda-cuda13.tar.gz`) come from the same upstream
+              release, pinned by `STRATA_VERSION` + `STRATA_ENGINE_VERSION` + both sha256 values, and
+              the digests are verified before anything is unpacked.
+            - **The component is verified by upstream's OWN verifier, at build and again at runtime.**
+              `strata components engine --output json` checks the ed25519 signature, every file's
+              recorded size, the entrypoint's sha256 and the executable bit; at runtime it also
+              checks that the package is usable against the card the container can actually see.
+              The signature is never re-implemented here.
+            - **Pictures are on by default.** `VISION: cpu` reads images with the encoder on the CPU
+              (nothing is taken from the card); `gpu` reads them on the card, `off` turns them off.
+              The encoder BINARY (`strata-vision`) ships inside the engine component; the encoder
+              FILE (about 0.9 GB of model data) is fetched once into the model store and reused.
             - **The model store is yours, mounted not baked.** The weights are 37-188 GB and are
-              licensed separately from the MIT engine (Qwen Community License 1.0 / Apache-2.0 /
-              Swift Open License), so they never enter the image. `/data` is a named volume here
-              and a *host bind* on the deployment: `host: ~/.local/share/strata` is the committed
-              default, because that is `$XDG_DATA_HOME`'s default and charly expands `~`/`$HOME`
-              but not `$XDG_*` (see opencharly/spec#260).
-            - **The whole configuration is the deployment's `env:`.** The setup choices are the
-              engine's own documented variables — FAMILY, MODEL, CONTEXT, VISION, KV, GPU, GPUS,
-              LAYER_SPLIT, LOW_RAM, GGUF_DIR, RESIDENT_BUDGET_GIB, KV_STREAMING, REINSTALL — with
-              the candy's `var:` as the documented default; `STRATA_RUN_ARGS` carries an external
-              model's extra engine argv (a community pack's `--pack/--native/--ple-gguf/--mtp`),
-              and the server-behaviour keys come from the charly-authored overlay in
-              `/opt/strata/charly-overlay.json`.
+              licensed separately from the engine (Qwen Community License 1.0 / Apache-2.0 / Swift
+              Open License), so they never enter the image. `/data` is a named volume here and a
+              *host bind* on the deployment: `host: ~/.local/share/strata` is the committed default,
+              because that is `$XDG_DATA_HOME`'s default and charly expands `~`/`$HOME` but not
+              `$XDG_*` (see opencharly/spec#260).
+            - **The whole configuration is the deployment's `env:`**, under upstream's OWN names:
+              MODEL, FAMILY, MODEL_PATH, CONTEXT, PARALLEL, VISION, KV, DRAFTING, DRAFT_VOCAB,
+              GPU/GPUS, GPU_ROLES, TUNE, PRESET, STRATA_SET, PORT — with `API_KEY` as the secret.
+              The candy's `env:` carries the documented defaults and upstream's container contract
+              (component/install/state/config/home inside `/data`); nothing is renamed.
 
-            It runs **rootless**: no privileged container, no root-owned host path. `HOST` stays
-            `0.0.0.0` because the pod publishes the port, which is why `STRATA_API_KEY` is a
-            `secret_require` — upstream's own advice is "always set a key" before exposing the
-            port. `/health` is answered before the API-key gate, so a probe needs no secret.
+            It runs **rootless**: no privileged container, no root-owned host path. Upstream refuses
+            to serve beyond loopback without a key (`--access lan`), so a key is always on — the
+            deployment's `API_KEY`, or one upstream mints into the volume on the first start.
+            `/health` is answered before the key gate, so a liveness probe needs no secret.
 
             The weights are NOT in this image and no first start is triggered by building it.
         require:
             - '@github.com/opencharly/layer-supervisord:v2026.314.0710'
-            # The GPU stack is intrinsic, unlike the `ollama` candy's deliberately GPU-agnostic
-            # declaration: Strata has NO CPU-only mode and its engine is compiled with
-            # -DSTRATA_ENABLE_CUDA=ON, so nvcc is a BUILD-time requirement (ledger D4).
-            # The GPU stack pins must stay at or ahead of the CDI driver-shadowing fix
-            # (opencharly/layer-nvidia#22, opencharly/layer-cuda#19): an image that bakes
-            # nvidia-utils' driver user-space shadows the host's injected NVML and
-            # `nvidia-smi` dies with "Driver/library version mismatch" on any host whose
-            # kernel driver is older than the distro package. These two pins were on the
-            # 2026-314 line, i.e. pre-fix.
-            - '@github.com/opencharly/layer-nvidia:v2026.320.1938'
-            # Bumped v2026.289.1250 -> v2026.289.1454 -> v2026.289.1504 (historical, 2026-08),
-            # then to v2026.314.0705 by `charly box reconcile --remote`, and now to
-            # v2026.320.2103 to clear the driver-shadowing line recorded above. The last step
-            # was NOT a reconcile: reconcile targets the newest tag, and this pin is judged by
-            # what the image must contain. Two
-            # producer fixes motivated the 2026-08 steps, both
-            # required before this family can build at all: #9's header-root/subtree/extension repair
-            # (layer-cuda#10, tag v2026.289.1454) and nvcc's missing sibling tree /usr/nvvm, without
-            # which the backend compiler is not found (layer-cuda#11, tag v2026.289.1504).
-            # Producer-first: every tag existed before this pin moved.
-            - '@github.com/opencharly/layer-cuda:v2026.320.2103'
-            # NOTE -- distro-cachyos EQUALS CHARLY's own box/cachyos gitlink, never a newest tag and
-            # never a descendant of it. Part II #3: a `distro-*` pin is judged by its source. Measured
-            # 2026-11-15 (commands and output pasted in the PR body): charly records box/cachyos at
-            # 2edc2ff94c6, that commit is UNTAGGED, so this pin is written as the sha itself, and a
-            # grep of ITS box/crabbox-e2e for the deleted pod-crabbox ref returns 0.
-            # gcc/g++/make/pkg-config for the engine bake. cmake and ninja come from
-            # requirements.txt into the venv, so they are deliberately NOT system packages.
-            - '@github.com/opencharly/layer-build-toolchain:v2026.314.0704'
+            # The POD GPU contract, and the ONLY GPU layer this candy names. `layer-cdi` composes
+            # `layer-cuda` itself (whose `drv=` strip removes the driver user-space a distro package
+            # manager pulls in behind the toolkit), and its plan steps FAIL the build if any
+            # host-coupled driver library or `nvidia*` binary survives. Naming `layer-nvidia` here
+            # would bake the VM contract's driver user-space, which shadows the host's injected NVML
+            # and makes `nvidia-smi` die with "Driver/library version mismatch" (opencharly/layer-cuda#21).
+            # The tag is the CONTRACT: v2026.323.1259 is a merged release whose `require:` names
+            # `layer-cuda:v2026.323.0252`, the toolkit release that dropped `require: layer-nvidia`
+            # — a `require:` is target-blind, so an older `layer-cdi` would drag the VM driver layer
+            # back into every pod that composes this candy (opencharly/layer-cdi#9).
+            - '@github.com/opencharly/layer-cdi:v2026.323.1259'
         var:
-            # ---- the BUILD-time surface (upstream's Dockerfile ARGs; ledger D6 / §5.2.1b) ----
-            # A post-2026-10-06 tag, never `main`: the repo's history was rewritten and a
+            # ---- the release coordinates (ledger `P1`) ----
+            # A release TAG, never `main`: the release assets below are attached to it, and
+            # `tools/docker/` is fetched from it. The repo's history was rewritten upstream, so a
             # `main` URL would also poison the download verb's content-addressed cache.
-            STRATA_VERSION: v0.1.44.1
-            # Upstream's own pinned ggml source; the engine does not build against anything else.
-            STRATA_LLAMA_COMMIT: 3cf03257f219afbe7334045ff7c6a06ac68c627d
-            # docker build has no GPU, so the CUDA architectures are fixed here. 75=RTX20,
-            # 86=RTX30, 89=RTX40, 120=RTX50, 80=A-series; CMakeLists refuses anything below 75.
-            # Narrow it per image for a much faster build (box/strata pins 89).
-            STRATA_CUDA_ARCHS: "75;80;86;89;120"
-            # "0" skips the image-encoder build (it is optional; VISION selects its use).
-            STRATA_BUILD_VISION: "1"
-            # Non-AVX2 hosts need a differently compiled engine ("avx" or "none").
-            STRATA_ISA_FLOOR: ""
-            # ---- the setup-choice DEFAULTS (ledger §5.2.1) ----
-            # Every one of these is a Layer-A field: a deployment's `env:` overrides it, and the
-            # value flows through the engine's own documented variable of the same name. Nothing
-            # is renamed.
-            FAMILY: qwen
+            STRATA_VERSION: v0.2.16
+            # The engine COMPONENT's version, which is also the Terminal build: the Terminal reports
+            # `strata 0.2.16 (build 0.1.62; …)`. Both asset filenames carry it.
+            STRATA_ENGINE_VERSION: 0.1.62
+            # The release assets' own sha256, from the v0.2.16 release page. The `download:` verb
+            # cannot carry a digest (charly's `#Op` has no such field: download offers `extract`,
+            # `to`, `extract_include`, `strip_components`, `mode`, `env` and `cache`, and nothing
+            # checksum-shaped), so the two archives are fetched UNPACKED by the verb — which keeps
+            # its content-addressed cache and its atomic `.part` rename — and the step after it
+            # verifies each digest with `sha256sum -c` BEFORE anything is unpacked. A fetch that
+            # cannot be verified is never a fetch this candy makes.
+            STRATA_CONTROL_SHA256: 045b6a7d7fbfbddab814794db5763d6244c887a394403b9fe0e8a4714d9bef8c
+            STRATA_ENGINE_SHA256: 6723e1b6b6042bfe1d368723ebf873afb0fa65f4f1908d948dd865098f6cfb9e
+            # The asset names, derived once here so the download steps and the unpack step cannot
+            # drift apart.
+            STRATA_CONTROL_TARBALL: strata-control-0.1.62-linux-x86_64.tar.gz
+            STRATA_ENGINE_TARBALL: strata-engine-0.1.62-linux-x86_64-cuda-cuda13.tar.gz
+            # The component folder name, which is the component ID upstream's own resolver reads
+            # (`<version>-<platform>-<backend>-<variant>`) — not decoration.
+            STRATA_ENGINE_COMPONENT: 0.1.62-linux-x86_64-cuda-cuda13
+            # Upstream's three container scripts, fetched from the pinned TAG and pinned by CONTENT as
+            # well: they are what the supervisord service executes (`entrypoint.sh`), what the container's
+            # own `strata` shorthand runs (`strata-wrapper.sh`) and the health semantics upstream ships.
+            # A tag can be moved; these hashes cannot be, and the step that installs them verifies all
+            # three, so "from the pinned tag" is a fact the build proves.
+            STRATA_ENTRYPOINT_SHA256: 1150f912a9d72311e49870c2cfa3b175f729638313e42b7dce392a15c1cefe57
+            STRATA_HEALTHCHECK_SHA256: 3665c0452a78aebbacd63609e6a4ed6c7ba91be6dd803023ea383caa17218ff6
+            STRATA_WRAPPER_SHA256: 9ec07e215eaa3bd86e9368c22d51523a1e31d4825ff82126c8cd050847f0c0cd
+        env:
+            # ---- upstream's container contract (its own tools/docker/Dockerfile) ----
+            # Everything writable lives in /data; the engine and the Terminal live in the image, so
+            # replacing the image never touches the model, the packs, the presets or the key.
+            STRATA_COMPONENTS_DIR: /opt/strata/components
+            STRATA_INSTALL_DIR: /data/install
+            XDG_STATE_HOME: /data/state
+            XDG_CONFIG_HOME: /data/config
+            HOME: /data/home
+            STRATA_IN_DOCKER: "1"
+            # The Terminal's bundled CPython must not pick up a user site-packages from the model
+            # store, and its output must not sit in a pipe buffer (a supervisor reads it).
+            PYTHONNOUSERSITE: "1"
+            PYTHONUNBUFFERED: "1"
+            LANG: C.UTF-8
+            # NVIDIA_VISIBLE_DEVICES / NVIDIA_DRIVER_CAPABILITIES are deliberately NOT set: they are
+            # read by the nvidia-container-runtime hook under `docker --gpus`, and this family's GPU
+            # arrives through CDI (`--device nvidia.com/gpu=all`), which reads the spec instead.
+            # ---- the deployment's settings: upstream's own names, renamed by nothing (ledger `P6`) ----
+            # Each of these is a documented default a deployment's `env:` overrides; the value flows
+            # through the engine's own variable of the same name, because the entrypoint turns it
+            # into the corresponding `strata launch` flag.
             MODEL: IQ2_XS
-            # 64K, not the engine's own recommendation for a small card (ledger V9): `own_path_context`
-            # returns 32768 at <=16.5 GB of VRAM. 64K is what an agent client actually needs -- a
-            # Hermes Agent turn measures ~12K prompt tokens before it does anything -- and it is
-            # affordable because the KV cache STREAMS to system RAM from 64K up, which needs the
-            # `--kv-resident` flag STRATA_RUN_ARGS below carries and the reserve that goes with it.
-            # Measured on a 16 GB card: 64K serves, 0.9 GB of KV in RAM, 80.7% expert-cache hit rate.
+            FAMILY: qwen
+            # Empty: the engine picks and downloads what suits the card. Point it at a folder of
+            # shards (`*.gguf` directly in the folder) to use files already on the store instead —
+            # nothing is downloaded for the model itself, and the prepared pack is still made in the
+            # volume. `GGUF_DIR` was the old name and still works upstream; that alias is NOT
+            # emitted here, because a surface with two names for one thing is the legacy the
+            # cutover exists to delete.
+            MODEL_PATH: ""
+            # 64K, not the engine's own recommendation for a small card: an agent client needs the
+            # room (one Hermes Agent turn measures ~12K prompt tokens before it acts), and it is
+            # affordable because the KV cache STREAMS to system RAM from 64K up. Measured on a 16 GB
+            # card: 64K serves, 0.9 GB of KV in RAM, 80.7% expert-cache hit rate.
             #
-            # CONTEXT is an INSTALL-TIME choice: setup.py records it as the config's `--max-context`,
-            # and an installed config keeps its recorded value (unlike VISION, which had no reachable
-            # surface at all). An existing deployment moves it with STRATA_RUN_ARGS -- see README.
+            # CONTEXT is a SETUP-TIME choice: the launcher records it as the run settings'
+            # `--max-context`, and a model that is already set up keeps its recorded value. Moving an
+            # existing deployment therefore means re-setting it (the run settings in
+            # /data/install are dropped when they name another card, and a `--save-preset` start
+            # rewrites them) — the entrypoint says so in its own log when it does.
             CONTEXT: "65536"
-            # PICTURES ARE ON BY DEFAULT (ledger V1). `cpu` reads them on the CPU: it takes nothing
-            # from the card, and the expert cache of this engine already runs VRAM-tight (measured on
-            # the 16 GB bed venue: 413 MiB free with everything loaded). `gpu` reads them on the card
-            # and costs ~1.2-1.4 GB of VRAM; `no`/`off` turns them off. `yes`/`on` are accepted as
-            # aliases for `cpu` and SAY SO, because at the pinned tag setup.py maps `--vision yes` to
-            # the GPU reader -- upstream measured that reader SLOWER for text on a 16 GB card
-            # (46.0 vs 48.4 tok/s), so the alias is deliberately not upstream's mapping.
-            #
-            # This reaches the engine through the charly vision pass (ledger V2) on EVERY start,
-            # not only the first: setup.py writes the run config's vision section, and setup.py does
-            # not run again once the config exists.
+            # Empty: answered requests in parallel, fitted to the card.
+            PARALLEL: ""
+            # PICTURES ARE ON BY DEFAULT. `cpu` reads them with the encoder on the CPU: it takes
+            # nothing from the card, and this engine's expert cache already runs VRAM-tight (measured
+            # on the 16 GB bed venue: 413 MiB free with everything loaded). `gpu` reads them on the
+            # card (~1.2-1.4 GB of VRAM); `off` turns them off. `yes`/`on` are accepted by the
+            # entrypoint and, with `on`, upstream picks the reader by the card's memory — under
+            # 24 GB that is the CPU reader, which is why `cpu` is stated here rather than `on`.
             VISION: cpu
-            # The encoder is MODEL DATA (0.9 GB, licensed with the weights): it is fetched ONCE into
-            # the model store (/data/vision/) and reused, never baked into the image -- the same rule
-            # the weights follow. The SOFTWARE beside it (the `strata-vision` binary, 222 MB) IS in
-            # the image, built by charly-build-engine.py, and two build-context checks below assert
-            # it. Upstream ships an encoder per family and none for `qwen36`; a model outside that
-            # table (a community fine-tune) names its own file here -- measured workable on the ORCA
-            # pack with the base model's encoder, but a deployment's claim to make, not a default.
-            VISION_MMPROJ_URL: ""
-            VISION_MMPROJ: ""
-            # The CPU reader's thread count (upstream's own rule: half the cores) and the most image
-            # tokens a picture may become (upstream's device defaults: 300 on the CPU, 1024 on the
-            # card). Empty means those defaults.
-            VISION_THREADS: ""
-            VISION_TOKENS: ""
+            # Empty: the engine's own choice (int8 conversation memory).
             KV: ""
+            # Empty: the engine's own choice (auto — DFlash2 where the engine has it, else the MTP).
+            DRAFTING: ""
+            DRAFT_VOCAB: ""
+            # Empty: the engine's choice ("all that fit"). GPU_ROLES is not combined with GPU/GPUS.
             GPU: ""
             GPUS: ""
-            LAYER_SPLIT: ""
-            # Always passed downstream: setup.py measures RAM from /proc/meminfo, which in a
-            # container is the host's total, not the cap, so a capped container must ask for
-            # the low-RAM mode itself.
-            LOW_RAM: auto
-            RESIDENT_BUDGET_GIB: ""
-            KV_STREAMING: ""
-            # Image-wide on purpose: the pod publishes the port, so 0.0.0.0 is right here and
-            # this is not a per-deployment knob.
-            HOST: 0.0.0.0
+            GPU_ROLES: ""
+            # Empty: no tuning. `quick`/`thorough` tune ONCE per preset (up to about 20/120 minutes on
+            # the first start) and keep the result in the volume.
+            TUNE: ""
+            # The preset a start saves its settings into (upstream's default name for a container).
+            PRESET: docker
+            # Advanced engine settings, space separated KEY=VALUE, like `strata launch --set`.
+            # Empty means none. This is the engine's own escape hatch, not a charly surface.
+            STRATA_SET: ""
+            # Image-wide on purpose: the pod publishes the port, so the server listens on every
+            # address inside the container and the key is what protects it.
             PORT: "8080"
-            GGUF_DIR: ""
-            STRATA_DATA: /data
-            # Which engine the entrypoint runs: "strata" (the real one) or "mock" (upstream's
-            # scripted, GPU-free, model-free mode for clients and tests). The deterministic bed
-            # sets it to `mock`; a real deployment never sets it.
-            STRATA_ENGINE: strata
-            # The server-behaviour keys (Layer B) the operator wants, as a JSON object, merged into
-            # the run config on the volume at every start. Anything the engine accepts at runtime may
-            # go here EXCEPT its own setup-recorded keys -- the merge helper refuses those, because a
-            # settings pass rewrites them. Empty means the baked defaults in STRATA_OVERLAY apply.
-            # The key names are not listed on purpose: `charly strata config` (or GET /config) is the
-            # engine's own published catalogue, and a copy here would drift from it.
-            STRATA_OVERLAY_JSON: ""
-            # A deployment-supplied EXTRA engine argv (Layer C), shell-quoted, merged into the run
-            # config's `args` at every start. This is the surface for a model outside setup.py's
-            # menu -- a community pack with its own --pack/--native/--ple-gguf/--mtp: each named
-            # flag has its value replaced in place (or is appended when absent).
-            #
-            # The DEFAULT is the VRAM reserve that a 64K context needs on a small card (ledger V9).
-            # Measured on the 16 GB venue at 64K: with the engine's own 700-MiB default it reported
-            # 413 MiB free per request and warned that the driver can page GPU memory to system RAM
-            # (upstream #2065); at 960 it still measured 509 MiB -- 3 MiB under the engine's 512
-            # threshold -- and the engine asked for 1024, which clears it (673 MiB free at load,
-            # 80.7% expert-cache hit rate). A deployment that sets this variable owns the WHOLE
-            # string, so include your own reserve (and --kv-resident when you raise the context)
-            # rather than expecting the default to merge with yours.
-            STRATA_RUN_ARGS: "--vram-reserve-mib 1024"
-            # The overlay the entrypoint merges into the run config on the volume (Layer B).
-            STRATA_OVERLAY: /opt/strata/charly-overlay.json
         distro:
             arch:
                 package:
-                    # `python` on Arch IS python3; setup.sh needs an interpreter >= 3.10 to build
-                    # the venv. Declared rather than assumed, and idempotent where the base
-                    # already carries it.
-                    - python
+                    # libstdc++/libgomp/libatomic in one package: the only thing the released engine
+                    # component and the Terminal's bundled CPython leave to the OS. Their own
+                    # SYSTEM-LIBS.txt names libc/libdl/libgcc_s/libm/libpthread/librt/libstdc++ and
+                    # nothing else, and the unpack step below proves it with `ldd` rather than
+                    # trusting this list. Declared rather than assumed, and idempotent where the
+                    # base already carries it.
+                    - gcc-libs
         port:
             - 8080
         volume:
-            # A NAMED volume only — a candy can never pin a host path (ledger §4.8/D15): the
-            # deploy binds it (`{name: strata-data, type: bind, host: ~/.local/share/strata,
-            # path: /data}`) or `charly config strata --bind strata-data` does.
+            # A NAMED volume only — a candy can never pin a host path (ledger `P8`, the rootless XDG postures): the deploy
+            # binds it (`{name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}`)
+            # or `charly config strata --bind strata-data` does.
             - name: strata-data
               path: /data
-        secret_accept:
-            # OPTIONAL by contract: a LOCAL strata deployment runs with no API key and therefore
-            # serves /v1/* openly. Set one only when the endpoint is reachable by someone else
-            # (a published host port on a shared network); the entrypoint projects this ENV name
-            # to the `API_KEY` name upstream's contract reads. An unset value means the entrypoint
-            # passes NO `--api-key` flag at all — the engine REJECTS an empty one ("an API key was
-            # given but it is empty"), so omitting the flag is what "no auth" actually requires.
-            - name: STRATA_API_KEY
+        secret_require:
+            # Upstream's OWN name (ledger `P7`), and it is REQUIRED rather than accepted, because
+            # that is the contract upstream actually implements: the entrypoint hardcodes `--access
+            # lan`, Strata refuses to serve beyond loopback without a key, and when nothing is passed
+            # it MINTS one into the volume. "A key is always on" is therefore not a deployment's
+            # choice — so a `secret_accept` here would describe a keyless posture that cannot exist,
+            # and (measured) an accepted name with no value in the credential store injects NOTHING at
+            # all: no podman secret, no environment variable, and no warning. A required name is what
+            # makes charly mint a value (`charly secrets list` then carries it) and hand it to the
+            # container as `Secret=<name>,type=env,target=API_KEY`.
+            #
+            # A deployment that wants its own key stores it first:
+            #     charly secrets set charly/secret/API_KEY "$(openssl rand -hex 24)"
+            # With none stored, `charly config` mints a 32-byte token — which is exactly upstream's own
+            # posture, one layer earlier, and it means the key the server uses is never a blank.
+            - name: API_KEY
               description: >-
-                  OPTIONAL Bearer / x-api-key token for /v1/*. Unset by default so a local pod
-                  serves openly; set it when the port is exposed beyond the host.
-                  /health stays pre-auth either way, so a liveness probe needs no secret.
+                  Bearer / x-api-key token for every /v1/* request. Minted by charly on `charly config`
+                  when none is stored, and passed to the engine as API_KEY; upstream mints its own only
+                  when handed nothing. /health stays pre-auth either way.
         env_provide:
             # Product-scoped only. A generic OPENAI_BASE_URL would silently redirect every
             # OpenAI-speaking service in the same pod, so consumers opt in with env_accept.
             STRATA_BASE_URL: "http://{{.ContainerName}}:8080/v1"
         service:
             - name: strata
-              # The charly-owned entrypoint: env -> overlay merge -> upstream's own install/launch
-              # flow (mechanism (a), ledger D12). It also implements the GPU-free `--engine mock`
-              # posture the deterministic bed uses (D7).
-              exec: /opt/strata/charly-entrypoint.sh
-              # NOT supervisord's 10 s default: the engine releases tens of GB of page-locked RAM
-              # on SIGTERM, and a too-early SIGKILL leaves stale VRAM and a wedged GPU hand-off.
-              # Integer form, and a MASK: the schema also permits "90s", but charly writes the
-              # value verbatim into supervisord's stopwaitsecs, which parses an int - so the
-              # duration form kills the service (ledger §89; filed against charly).
-              stop_timeout: 90
+              # Upstream's own container entrypoint, installed from the pinned tag below. It turns the
+              # env above into `strata launch --no-tui --access lan …`, runs the migration of an
+              # older-layout volume, keeps the server up and drains it on SIGTERM. There is no
+              # charly-owned entrypoint any more (ledger `P3`).
+              exec: /opt/strata/entrypoint.sh run
+              # Upstream asks for two minutes: a stop drains the queues, unloads the model and
+              # releases the page-locked RAM, and a too-early SIGKILL leaves stale VRAM behind.
+              # Integer form, and a MASK: the schema also permits "120s", but charly writes the value
+              # verbatim into supervisord's stopwaitsecs, which parses an int.
+              stop_timeout: 120
               restart: always
               enable: true
         plan:
-            # Fetch with GIT METADATA, not as a tarball.
+            # ---- the two release archives: ONE step each, digest-gated before anything lands ----
+            # The `download:` verb CANNOT carry a digest — charly's `#Op` offers `extract`, `to`,
+            # `extract_include`, `strip_components`, `mode`, `env` and `cache`, and nothing
+            # checksum-shaped — so a `download:` step alone would be a bare unpinned fetch. The org's
+            # established shape for a pinned artifact is therefore a `run:` step that fetches, verifies
+            # and installs in ONE layer (the same shape as opencharly/layer-k3s, layer-kind and
+            # layer-nerdctl). The one-layer part is not cosmetic: a `download:` into a staging path plus a
+            # delete in a later step would leave the 674 MB of archives in a LOWER layer forever.
             #
-            # Upstream's Dockerfile clones the repo, and the bake queries the tree's own git metadata
-            # (that is where the ggml commit comes from). A tarball has no `.git`, so `ggml commit:`
-            # resolved to "unknown" and the queries emitted
-            # `fatal: not a git repository (or any of the parent directories): .git`
-            # into the build log -- twice -- which the zero-error-line rule correctly counts as a gate
-            # failure (R10, zero warnings). Cloning as upstream does removes both symptoms by
-            # construction instead of suppressing the message, and keeps this candy faithful to D6
-            # ("the engine baked exactly as upstream's Dockerfile does"). Measured: the image-build step
-            # itself exited 0 after 18m22s with these two lines the only thing standing between it and a
-            # pass.
-            - run: fetch the pinned Strata source tree, git metadata included
+            # The bytes are cached across builds under a BuildKit cache mount and the digest is checked on
+            # EVERY build, so a stale or corrupt cache entry fails the build instead of shipping. The pinned
+            # value is the release's own sha256, carried in `var:` so it is auditable in the diff — never
+            # re-fetched from a SHA256SUMS file, which would make the gate trust the same server twice.
+            - run: fetch, verify and unpack the pinned Strata Terminal archive
+              run_as: root
+              cache:
+                  - /var/cache/charly-strata
               command: |
-                rm -rf /opt/strata
-                # Pin the release commit by fetching the tag REF and checking out FETCH_HEAD, rather than
-                # with `clone --branch <tag>`. Upstream's release tags are ANNOTATED, so --branch hands git the
-                # tag object's id and git warns while peeling it to the commit (git commit.c
-                # lookup_commit_or_die); the build's severity-prefix recognizer counts that line, so a
-                # cache-cold rebuild could never report warnings=0. Both forms land the same peeled commit;
-                # this one emits no diagnostic. The exact warning text is deliberately NOT quoted here,
-                # because plan comments reach the OCI description label.
-                git clone --quiet --depth 1 --no-single-branch \
-                  https://github.com/Niko1221/Strata /opt/strata
-                git -C /opt/strata fetch --quiet --depth 1 origin "refs/tags/${STRATA_VERSION}"
-                git -C /opt/strata checkout -q FETCH_HEAD
+                set -eu
+                cache=/var/cache/charly-strata
+                mkdir -p "$cache" /opt/strata/terminal
+                tar="$cache/${STRATA_CONTROL_TARBALL}"
+                if [ ! -s "$tar" ]; then
+                  curl -fsSL --retry 3 -o "$tar.part" \
+                    "https://github.com/Niko1221/Strata/releases/download/${STRATA_VERSION}/${STRATA_CONTROL_TARBALL}"
+                  mv -f "$tar.part" "$tar"
+                fi
+                # The digest gate. Nothing is unpacked until the bytes are the release's own, and a cache
+                # hit is verified exactly like a fresh fetch.
+                printf '%s  %s\n' "${STRATA_CONTROL_SHA256}" "${STRATA_CONTROL_TARBALL}" | ( cd "$cache" && sha256sum -c - )
+                # The archive has no top-level directory (`tar tzf` shows `bin/strata`, `serve/`, `python/`
+                # … directly), so `--strip-components=0` and the destination IS the Terminal's root —
+                # exactly the layout upstream's own Dockerfile builds.
+                tar -xzf "$tar" -C /opt/strata/terminal --strip-components=0
+            - run: fetch, verify and unpack the pinned Strata engine component (CUDA 13, signed)
               run_as: root
-            - run: install the engine-bake script (upstream's own setup.py functions)
-              copy: charly-build-engine.py
-              to: /opt/strata/charly-build-engine.py
-              mode: "0644"
+              cache:
+                  - /var/cache/charly-strata
+              command: |
+                set -eu
+                cache=/var/cache/charly-strata
+                component="/opt/strata/components/engine/${STRATA_ENGINE_COMPONENT}"
+                mkdir -p "$cache" "$component"
+                tar="$cache/${STRATA_ENGINE_TARBALL}"
+                if [ ! -s "$tar" ]; then
+                  curl -fsSL --retry 3 -o "$tar.part" \
+                    "https://github.com/Niko1221/Strata/releases/download/${STRATA_VERSION}/${STRATA_ENGINE_TARBALL}"
+                  mv -f "$tar.part" "$tar"
+                fi
+                printf '%s  %s\n' "${STRATA_ENGINE_SHA256}" "${STRATA_ENGINE_TARBALL}" | ( cd "$cache" && sha256sum -c - )
+                # Same shape as the Terminal: no top-level directory, so the component folder named after
+                # the component ID (`<version>-<platform>-<backend>-<variant>`) is the package's root —
+                # which is the folder upstream's resolver reads.
+                tar -xzf "$tar" -C "$component" --strip-components=0
+            - run: prove every library of the Terminal and the engine component resolves inside this image
               run_as: root
-            - run: install the config-merge helper
-              copy: charly-merge-config.py
-              to: /opt/strata/charly-merge-config.py
-              mode: "0644"
-              run_as: root
-            - run: install the run-args merge helper
-              copy: charly-merge-args.py
-              to: /opt/strata/charly-merge-args.py
-              mode: "0644"
-              run_as: root
-            # The vision pass (ledger V2): the ONE writer of the run config's setup-owned `vision`
-            # section on an installed model, and the owner of the encoder file on the volume.
-            - run: install the vision pass
-              copy: charly-vision.py
-              to: /opt/strata/charly-vision.py
-              mode: "0644"
-              run_as: root
-            - run: install the charly entrypoint
-              copy: charly-entrypoint.sh
-              to: /opt/strata/charly-entrypoint.sh
+              command: |
+                set -eu
+                # Upstream's own Dockerfile asks exactly this at exactly this point, and for the same
+                # reason: the GPU driver's libcuda / libnvidia-* arrive from the host through CDI,
+                # everything else must be in the image. `ldd` is the arbiter — not a package list, which
+                # is why `gcc-libs` above is a starting point and this is the gate.
+                miss=""
+                for d in /opt/strata/components/engine/*/; do
+                  for f in "$d"*; do
+                    [ -f "$f" ] || continue
+                    head -c4 "$f" | grep -q ELF || continue
+                    found=$(LD_LIBRARY_PATH="$d" ldd "$f" 2>/dev/null | grep 'not found' | grep -v -E 'libcuda\.so|libnvidia|libnvcuvid' || true)
+                    [ -z "$found" ] || miss="$miss
+                $(basename "$f"): $found"
+                  done
+                done
+                for f in /opt/strata/terminal/python/bin/python3 /opt/strata/terminal/bin/strata; do
+                  found=$(ldd "$f" 2>/dev/null | grep 'not found' || true)
+                  [ -z "$found" ] || miss="$miss
+                $(basename "$f"): $found"
+                done
+                if [ -n "$miss" ]; then
+                  echo "MISSING LIBRARIES in this image:$miss" >&2
+                  exit 1
+                fi
+                echo "every library of the Terminal and the engine component resolves inside this image"
+            # ---- upstream's container scripts, from the PINNED TAG (never `main`) ----
+            # These ARE the runtime contract: the entrypoint turns the deployment's env into
+            # `strata launch`, the wrapper makes `strata monitor` work inside the container, and the
+            # healthcheck is the one upstream ships with its own image. Their sha256 is pinned too
+            # (`var:`, verified in the next step), so "from the pinned tag" is a fact rather than a promise:
+            # a tag can be moved, and these three files are exactly what the running service executes.
+            - run: install upstream's container entrypoint
+              download: "https://raw.githubusercontent.com/Niko1221/Strata/${STRATA_VERSION}/tools/docker/entrypoint.sh"
+              extract: none
+              to: /opt/strata/entrypoint.sh
               mode: "0755"
               run_as: root
-            - run: create the venv and bake the engine, exactly as upstream's Dockerfile does
-              command: |
-                  cd /opt/strata
-                  python3 -m venv .venv
-                  .venv/bin/pip install --no-cache-dir --upgrade pip
-                  .venv/bin/pip install --no-cache-dir -r requirements.txt
-                  .venv/bin/python /opt/strata/charly-build-engine.py
-                  rm -rf build build-vision
-                  # The runtime runs as uid 1000 and writes .strata-pip.json into the venv;
-                  # a root-owned tree makes that a hard PermissionError at first start
-                  # (measured). Hand the whole tree to the runtime user here, once.
-                  chown -R user:user /opt/strata
-              cache:
-                  - /root/.cache/pip
-                  # NOT cached: /opt/strata/build and /opt/strata/third_party.
-                  #
-                  # Both were cached for speed, and both made the build NON-HERMETIC: they persist across
-                  # builds, so the source tree and the CMake build directory seen by one run can differ
-                  # from those of the next. Measured: two consecutive builds of the SAME commit reported
-                  # different `ggml commit:` values at configure (`unknown` vs `3cf03257f`) and produced
-                  # DIFFERENT TARGET SETS -- one had a `strata` target, the next did not
-                  # ("ninja: error: unknown target 'strata'"). A gate that does not build a reproducible
-                  # artifact is not a gate: it can pass, or fail, for reasons unrelated to the commit
-                  # under test (R7/R10).
-                  #
-                  # The engine source is pinned (LLAMA_CPP_COMMIT + the pinned release tag), so re-fetching
-                  # it is deterministic; the pip cache above stays because package downloads ARE reproducible
-                  # and it is the slow part. Cost of this choice: a slower bake, in exchange for a gate that
-                  # measures the tree that will be pushed.
+            - run: install upstream's container healthcheck
+              download: "https://raw.githubusercontent.com/Niko1221/Strata/${STRATA_VERSION}/tools/docker/healthcheck.sh"
+              extract: none
+              to: /opt/strata/healthcheck.sh
+              mode: "0755"
               run_as: root
-            # NOTE -- why `reasoning_effort` is NOT here. It is a REQUEST-body parameter, not a run-config
-            # key: it appears nowhere in the engine's own config surface (verified against serve/runconfig.py
-            # and serve/server.py at the pinned tag), and it demonstrably changes a response when sent in the
-            # request body (measured: `none` yields non-null content where the default spends the budget on
-            # thinking). Writing it into the run config would be an inert key that CLAIMS to set a behaviour
-            # -- the same class of falsehood as a fabricated `ptx` in the engine stamp. The verified
-            # mechanism for it is per-request; the candy's completion probe uses exactly that.
-            # NOTE -- `lazy_load: true` below is reconciled, not contradicted, by the vision pass.
-            # Upstream's settings validator REFUSES to set `lazy_load: true` on a config that reads
-            # images (serve/runconfig.py:92; its only call site is the settings-write path), and
-            # documents the key as text-only, while the LOAD path tolerates the pair (measured: the
-            # engine starts and reports images: true). A fast first answer matters more for the common
-            # text-only deployment, so the overlay keeps the fast path, and the vision pass -- which
-            # runs after it, on every start -- turns lazy loading off WHEN it writes the section, so
-            # the config stays one upstream's own API would write, and says so in one line (ledger V4).
-            # One owner per fact: the deployment's policy here, the contract there.
-            - run: write the server-behaviour overlay the entrypoint merges into the run config
-              config: /opt/strata/charly-overlay.json
+            - run: install upstream's in-container strata wrapper
+              download: "https://raw.githubusercontent.com/Niko1221/Strata/${STRATA_VERSION}/tools/docker/strata-wrapper.sh"
+              extract: none
+              to: /usr/local/bin/strata
+              mode: "0755"
+              run_as: root
+            - run: verify the three scripts' digests and make the installed tree usable by the runtime user
+              run_as: root
+              command: |
+                set -eu
+                # The three scripts are the container contract, so their CONTENT is pinned, not just the
+                # tag they came from: a tag can be moved, and these are the files the running service
+                # executes.
+                printf '%s  %s\n' "${STRATA_ENTRYPOINT_SHA256}"  /opt/strata/entrypoint.sh   | sha256sum -c -
+                printf '%s  %s\n' "${STRATA_HEALTHCHECK_SHA256}" /opt/strata/healthcheck.sh  | sha256sum -c -
+                printf '%s  %s\n' "${STRATA_WRAPPER_SHA256}"     /usr/local/bin/strata      | sha256sum -c -
+                # The image runs as uid 1000, which owns nothing under /opt (the tree was unpacked as
+                # root), and NOTHING inside it needs to be written: the Terminal's CPython compiles
+                # nothing at run time (the release archive already carries its `.pyc` files) and every
+                # writable path — presets, run settings, the model, the packs, the key — lives in /data.
+                # What the runtime user does need is read and traversal, plus the execute bit on the six
+                # entry points the `test -x` lines below name. `a+rX` grants exactly that and nothing more
+                # (X = execute only on something already executable by someone), so it cannot grant a
+                # write, and it does not depend on the uid the base happened to resolve — a `chown` here
+                # would hardcode a number that a `user_policy` change would silently invalidate.
+                chmod -R a+rX /opt/strata
+                test -x /opt/strata/entrypoint.sh
+                test -x /opt/strata/healthcheck.sh
+                test -x /usr/local/bin/strata
+                test -x /opt/strata/terminal/bin/strata
+                test -x "/opt/strata/components/engine/${STRATA_ENGINE_COMPONENT}/strata"
+                test -x "/opt/strata/components/engine/${STRATA_ENGINE_COMPONENT}/strata-vision"
+            # ---- the probe helper: ONE implementation of "ask the running server" ----
+            # Every runtime assertion below, and the bed's own, ask the same three questions (is the
+            # projection well formed, does the key gate match this deployment, does a completion
+            # round-trip). They ask them through THIS file so the answers have one implementation and
+            # one place to fix (R2) — the shape the layer skill carries for start scripts, applied to
+            # probes.
+            #
+            # It is deliberately NOT a runtime component: it never starts, configures or supervises
+            # anything (that is upstream's entrypoint, ledger `P3`), and the only state it reads is the
+            # key upstream writes to /data/state/api-key from `strata launch --show-key`. Installing it
+            # with `write:` also keeps the probe bodies out of a folded YAML scalar, where a stray line
+            # break inside a `python -c` program is a syntax error nobody sees until the gate runs.
+            - run: install the probe helper the plan's runtime assertions share
+              write: /opt/strata/charly-probes.py
               mode: "0644"
               run_as: root
               content: |
-                  {
-                    "open_browser": false,
-                    "aliases": ["strata", "qwen3.8-flash-next"],
-                    "lazy_load": true,
-                    "idle_unload_s": 900,
-                    "engine_silence_s": 300,
-                    "parallel": 1
-                  }
+                #!/usr/bin/env python3
+                """Assertion helpers for this layer's plan steps (ADE), and nothing else.
+
+                The runtime is upstream's container entrypoint; this file never starts, configures or
+                supervises the server. It only asks a RUNNING server the questions charly's plan needs,
+                so those questions have one implementation instead of one per step. Each verb exits 0
+                on success and prints what it saw.
+
+                    health [FIELD=VALUE ...]   GET /health; assert it is well formed, then each pair
+                    models                    GET /v1/models twice, honouring the deployment's key
+                    chat                      one completion with reasoning_effort none
+                    vision                    one 64x64 red PNG, the answer must name the colour
+                """
+                import base64
+                import http.client
+                import json
+                import struct
+                import sys
+                import urllib.request
+                import zlib
+
+                HOST = "127.0.0.1"
+                PORT = 8080
+                #: Upstream's own record of the key in force: the entrypoint writes the output of
+                #: `strata launch --show-key` here once the server serves, whether the deployment
+                #: supplied a key or upstream minted one. No file (or an empty one) means no key.
+                KEY_FILE = "/data/state/api-key"
+                FIELDS = ("max_context", "images", "model", "loaded", "service", "api_key")
+
+
+                def key():
+                    try:
+                        with open(KEY_FILE, encoding="utf-8") as fh:
+                            return fh.read().strip()
+                    except OSError:
+                        return ""
+
+
+                def call(path, body=None, auth=True):
+                    """(status, parsed body) without raising on 4xx: a 401 is an ANSWER here."""
+                    conn = http.client.HTTPConnection(HOST, PORT, timeout=60)
+                    headers = {"Content-Type": "application/json"}
+                    k = key() if auth else ""
+                    if k:
+                        headers["Authorization"] = "Bearer " + k
+                    conn.request("POST" if body is not None else "GET", path, body=body, headers=headers)
+                    resp = conn.getresponse()
+                    raw = resp.read()
+                    conn.close()
+                    try:
+                        return resp.status, json.loads(raw or b"{}")
+                    except ValueError:
+                        return resp.status, {}
+
+
+                def health(*pairs):
+                    h = json.load(urllib.request.urlopen("http://%s:%d/health" % (HOST, PORT), timeout=60))
+                    print(json.dumps({f: h.get(f) for f in FIELDS}))
+                    if not (h.get("status") == "ok" and h.get("service") == "strata"
+                            and isinstance(h.get("api_key"), bool) and all(f in h for f in FIELDS)):
+                        print("health: the projection is not well formed", file=sys.stderr)
+                        return 1
+                    for pair in pairs:
+                        field, _, want = pair.partition("=")
+                        got = h.get(field)
+                        if isinstance(got, bool):
+                            ok = got is {"true": True, "false": False}.get(want, want)
+                        else:
+                            ok = str(got) == want
+                        if not ok:
+                            print("health: %s is %r, expected %r" % (field, got, want), file=sys.stderr)
+                            return 1
+                    return 0
+
+
+                def models():
+                    k = key()
+                    anon, _ = call("/v1/models", auth=False)
+                    authed, body = call("/v1/models")
+                    print(json.dumps({"key_in_force": bool(k), "anonymous": anon, "with_the_key": authed}))
+                    if not k:
+                        return 0 if anon == 200 else 1
+                    return 0 if anon == 401 and authed == 200 and bool(body.get("data")) else 1
+
+
+                def _answer(status, data):
+                    choice = (data.get("choices") or [{}])[0]
+                    content = (choice.get("message") or {}).get("content")
+                    print(json.dumps({"status": status, "finish_reason": choice.get("finish_reason"),
+                                      "content": content}))
+                    return status, choice, content
+
+
+                def chat():
+                    # `reasoning_effort: none` is a REQUEST-body parameter, never a run-config key, and
+                    # without it a small max_tokens returns content null with finish_reason "length".
+                    body = json.dumps({"model": "strata", "messages": [{"role": "user", "content": "say hi"}],
+                                       "max_tokens": 64, "reasoning_effort": "none"}).encode()
+                    status, choice, content = _answer(*call("/v1/chat/completions", body=body))
+                    return 0 if status == 200 and content and choice.get("finish_reason") == "stop" else 1
+
+
+                def vision():
+                    w = h = 64
+                    raw = b"".join(b"\x00" + bytes((255, 0, 0)) * w for _ in range(h))
+
+                    def chunk(tag, data):
+                        return (struct.pack(">I", len(data)) + tag + data
+                                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+                    png = (b"\x89PNG\r\n\x1a\n"
+                           + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                           + chunk(b"IDAT", zlib.compress(raw, 9))
+                           + chunk(b"IEND", b""))
+                    body = json.dumps({"model": "strata", "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": "What colour is this image? Answer with one word."},
+                        {"type": "image_url",
+                         "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}}]}],
+                        "max_tokens": 48, "reasoning_effort": "none"}).encode()
+                    status, choice, content = _answer(*call("/v1/chat/completions", body=body))
+                    return 0 if status == 200 and "red" in (content or "").lower() else 1
+
+
+                VERBS = {"health": health, "models": models, "chat": chat, "vision": vision}
+
+                if __name__ == "__main__":
+                    verb = sys.argv[1] if len(sys.argv) > 1 else ""
+                    if verb not in VERBS:
+                        print("usage: charly-probes.py {%s} [FIELD=VALUE ...]" % ",".join(VERBS),
+                              file=sys.stderr)
+                        sys.exit(2)
+                    sys.exit(VERBS[verb](*sys.argv[2:]))
             # ---- the candy's own probes: authored HERE so every composing box and bed inherits
-            # them (R3 -- one copy of every probe, never repeated per bed) ----
-            - check: the baked engine binary is present
-              id: strata-engine-binary
+            # them (R3 — one copy of every probe, never repeated per bed) ----
+            #
+            # The interpreter is the Terminal's OWN bundled CPython, at its absolute path, on purpose:
+            # this candy installs no distro `python`, so a bare `python3` in a probe would depend on a
+            # package nothing here declares. A probe that cannot start its interpreter fails loudly
+            # instead of reading as green.
+            - check: the Terminal's launcher is installed where the service and every probe expect it
+              id: strata-terminal-binary
+              # The declarative half of the Terminal's proof: the artifact LANDED. `strata-terminal-version`
+              # is the other half — what landed is the pinned build — and the two are different facts, which
+              # is why they are two steps.
               file:
-                  file: /opt/strata/engine/strata
+                  file: /opt/strata/terminal/bin/strata
                   exists: true
-            - check: the stamp records a locally baked engine, written only after a successful build
-              id: strata-engine-stamp
+            - check: the engine component's signed manifest is installed
+              id: strata-engine-manifest
+              # The component's own identity document: `strata components engine` reads the signature and
+              # the per-file hashes from HERE. Its presence at the PINNED component id is what makes the
+              # verifier's answer mean "the package this repo pins", and a repin that forgets this literal
+              # fails here rather than passing against a stale folder.
+              file:
+                  file: /opt/strata/components/engine/0.1.62-linux-x86_64-cuda-cuda13/engine-component.json
+                  exists: true
+            - check: the Terminal reports both pinned versions
+              id: strata-terminal-version
               exit_status: 0
-              command: >-
-                  python3 -c "import json,sys; m=json.load(open('/opt/strata/engine/BUILD.json'));
-                  sys.exit(0 if m.get('source')=='local' and m.get('archs') and m.get('src') else 1)"
-            - check: the charly entrypoint, the merge helper and the overlay are installed
-              id: strata-charly-files
-              file:
-                  file: /opt/strata/charly-entrypoint.sh
-                  exists: true
-            - check: the venv the engine was built in is present
-              id: strata-venv
-              file:
-                  file: /opt/strata/.venv/bin/python
-                  exists: true
-            # ---- the vision SOFTWARE is in the image; its DATA never is (ledger V5) ----
-            - check: the image-encoder binary is baked beside the engine
+              # `strata --version` prints the CONTROL version and the build it carries:
+              #     strata 0.2.16 (build 0.1.62; python 3.12.15 at …)
+              # so one probe ties the image to BOTH coordinates in `var:`. The literals are stated
+              # here rather than read from the environment: a check body's braced references are
+              # resolved by the check runner (which does not see a candy's `var:`), an unresolvable
+              # one SKIPS the step, and a version assertion computed from the version would be
+              # vacuous anyway. A repin that forgets this line fails here — the safe direction.
+              command: |
+                  /opt/strata/terminal/python/bin/python3 - <<'PY'
+                  import subprocess, sys
+                  out = subprocess.run(["/opt/strata/terminal/bin/strata", "--version"],
+                                       capture_output=True, text=True).stdout.strip()
+                  print(out)
+                  sys.exit(0 if out.startswith("strata 0.2.16") and "build 0.1.62" in out else 1)
+                  PY
+            - check: the engine component is present and passes upstream's own verifier
+              id: strata-engine-component
+              exit_status: 0
+              # `strata components engine --output json` IS the verifier: it checks the ed25519
+              # signature of `engine-component.json`, every file's recorded size, the entrypoint's
+              # sha256 and its executable bit, and it reports the package this machine would start.
+              # This candy never re-implements any of that.
+              #
+              # `STRATA_ENGINE_BACKEND=cuda` is upstream's own environment override (its docstring:
+              # "the tests and the support desk use it"). It is what makes this check about the
+              # ARTIFACT instead of about the build host: without it the resolver first asks the
+              # machine which backend it needs, and a builder with no card in `/sys/bus/pci` answers
+              # "cpu", so a perfectly good CUDA package would be reported unusable on the builder and
+              # usable on the venue — the one thing a build-time check must not be. With the backend
+              # named, `usable: true` means: this platform, this backend, signature verified, files as
+              # recorded. Whether a CARD is present is `strata-engine-usable` below.
+              command: |
+                  /opt/strata/terminal/python/bin/python3 - <<'PY'
+                  import json, os, subprocess, sys
+                  env = dict(os.environ, STRATA_ENGINE_BACKEND="cuda")
+                  done = subprocess.run(["/opt/strata/terminal/bin/strata", "components", "engine", "--output", "json"],
+                                        capture_output=True, text=True, env=env)
+                  print(done.stdout or done.stderr)
+                  report = json.loads(done.stdout)
+                  engine = report.get("engine") or {}
+                  print(json.dumps({k: engine.get(k) for k in ("version", "backend", "variant", "signed", "exe")}))
+                  ok = (done.returncode == 0 and report.get("usable") is True
+                        and not report.get("problems")
+                        and engine.get("version") == "0.1.62"
+                        and engine.get("signed") is True
+                        and engine.get("backend") == "cuda"
+                        and engine.get("variant") == "cuda13"
+                        and os.access(str(engine.get("exe", "")), os.R_OK | os.X_OK))
+                  sys.exit(0 if ok else 1)
+                  PY
+            - check: the image-encoder binary ships inside the engine component
               id: strata-vision-binary
+              # The encoder is SOFTWARE and must be in the image before the first start; its DATA (the
+              # ~0.9 GB mmproj file) is model data and never is. The path is literal on purpose: it is
+              # the component id (`<version>-<platform>-<backend>-<variant>`), so a repin that forgets
+              # this line fails here, and `strata-engine-component` above is the step that proves the
+              # component at that path is the signed one this repo pins.
               file:
-                  file: /opt/strata/engine/strata-vision
+                  file: /opt/strata/components/engine/0.1.62-linux-x86_64-cuda-cuda13/strata-vision
                   exists: true
-            - check: the engine stamp records an encoder build, so the binary matches this engine
-              id: strata-vision-stamp
+            - check: upstream's three container scripts are installed and executable
+              id: strata-container-scripts
               exit_status: 0
-              # The same discipline as the engine's own stamp check: BUILD.json is written LAST by
-              # charly-build-engine.py, so "the encoder exists" alone would not prove it was built
-              # from THIS engine's source -- the stamp is what ties the two together.
-              command: >-
-                  python3 -c "import json,sys; m=json.load(open('/opt/strata/engine/BUILD.json'));
-                  sys.exit(0 if m.get('vision') in ('cpu','gpu') and m.get('vision_src') else 1)"
-            - check: the family/encoder table equals upstream's own, so a repin cannot drift it
-              id: strata-vision-table
-              exit_status: 0
-              # The helper carries the family -> encoder table as DATA (it may not import upstream's
-              # setup.py at runtime: that is ~1 GB of imports and internals the wrapper deliberately
-              # does not depend on). This check is what keeps that copy honest: it compares every row
-              # against setup.FAMILIES / OWN_PATH_FAMILIES IN THE BUILT IMAGE, so advancing the pin
-              # fails here instead of silently pointing a deployment at the wrong encoder. A row of
-              # None means "upstream ships no encoder", and is asserted to match upstream's own
-              # vision: False -- that is qwen36.
-              command: >-
-                  /opt/strata/.venv/bin/python -c "import importlib.util,sys; sys.path.insert(0,'/opt/strata');
-                  import setup; fams={**setup.FAMILIES, **setup.OWN_PATH_FAMILIES};
-                  spec=importlib.util.spec_from_file_location('cv','/opt/strata/charly-vision.py');
-                  cv=importlib.util.module_from_spec(spec); spec.loader.exec_module(cv);
-                  bad=[];
-                  [bad.append(n+': absent upstream') if n not in fams else
-                   (bad.append(n+': upstream ships an encoder') if row is None and fams[n].get('vision', True) is not False else
-                    (bad.append(n+': url/file differ') if row is not None and (row['url']+row['file']) != (fams[n].get('mmproj_hf','')+fams[n].get('mmproj','')) else None))
-                   for n, row in cv.FAMILIES.items()];
-                  print('table mismatches:', bad);
-                  sys.exit(0 if not bad else 1)"
-            - check: "the vision pass writes the section, reuses a present encoder, and settles lazy_load"
-              id: strata-vision-pass
-              exit_status: 0
-              # The deterministic, GPU-free and NETWORK-free proof of the pass the deployment runs:
-              # a synthetic run config, a pre-created encoder file (so the reuse path is exercised and
-              # no download is attempted), and a re-run to prove idempotency. It fails on the
-              # pre-change tree by construction -- there is no /opt/strata/charly-vision.py to run.
-              command: >-
-                  python3 -c "import json,os,pathlib,subprocess,sys,tempfile;
-                  d=pathlib.Path(tempfile.mkdtemp()); (d/'vision').mkdir();
-                  (d/'vision'/'mmproj-test.gguf').write_bytes(b'GGUF'+bytes(4096));
-                  p=d/'strata-t.json'; p.write_text(json.dumps({'args':['--native','/x/model-00001-of-00002.gguf','--max-context','32768'],'lazy_load':True,'model_name':'t'}));
-                  env=dict(os.environ, VISION='cpu', FAMILY='qwen', VISION_MMPROJ='mmproj-test.gguf',
-                           VISION_MMPROJ_URL='http://127.0.0.1:1/unreachable', STRATA_DATA=str(d), VISION_THREADS='2');
-                  r=subprocess.run(['python3','/opt/strata/charly-vision.py',str(p)],env=env,capture_output=True,text=True);
-                  c=json.loads(p.read_text()); v=c.get('vision') or {};
-                  r2=subprocess.run(['python3','/opt/strata/charly-vision.py',str(p)],env=env,capture_output=True,text=True);
-                  ok=(r.returncode==0 and v.get('exe')=='/opt/strata/engine/strata-vision'
-                      and v.get('mmproj')==str(d/'vision'/'mmproj-test.gguf')
-                      and v.get('model')=='/x/model-00001-of-00002.gguf' and v.get('gpu') is False
-                      and v.get('threads')==2 and v.get('max_tokens')==300 and c.get('lazy_load') is False
-                      and r2.returncode==0 and 'already in effect' in r2.stdout);
-                  print(r.stdout or r.stderr); print(r2.stdout or r2.stderr);
-                  sys.exit(0 if ok else 1)"
-            # NOTE -- there is deliberately NO candy-level check that RUNS the engine binary. It cannot
-            # be satisfied without a device (the binary loads libcuda, which CDI injects at runtime and
-            # which no build context has), so such a check would break the deterministic GPU-free bed --
-            # the one bed whose entire purpose is to need no card. Its unique value, "the binary
-            # self-reports the version its stamp claims", is asserted in check-strata-gpu-pod, where a
-            # device exists; everything provable GPU-free is already covered by the stamp check above.
-            # (This is the round-12 principle applied a second time: a probe that needs a device belongs
-            # to the substrate that has one.)
+              # The entrypoint is what the supervisord service runs, so its absence is not a warning:
+              # it is a service that never starts. The wrapper and the healthcheck are part of the same
+              # contract (`strata monitor` inside the container; the health semantics upstream ships).
+              # One probe for the three, because one pinned tag installs all three.
+              command: |
+                  /opt/strata/terminal/python/bin/python3 - <<'PY'
+                  import os, sys
+                  paths = ["/opt/strata/entrypoint.sh", "/opt/strata/healthcheck.sh", "/usr/local/bin/strata"]
+                  bad = [p for p in paths if not os.access(p, os.R_OK | os.X_OK)]
+                  print("not readable+executable:", bad)
+                  sys.exit(0 if not bad else 1)
+                  PY
+            # ---- runtime probes: the boundary a deployment actually crosses ----
             - check: the running server answers /health, which is pre-auth by design
               id: strata-health
               context: [runtime]
+              timeout: 1900s
+              # The ONLY probe here that crosses the PUBLISHED port from outside, so it is worth
+              # keeping as well as the in-container projection: it proves the port mapping and the
+              # server's own pre-auth branch, not just the container's loopback.
+              #
+              # It is a POLL, not a single shot, and that is load-bearing. The entrypoint legitimately
+              # takes MINUTES on a fresh volume — measured on this family's own bed: the projection
+              # needed 20 attempts / 4m54.963s, because the first start migrates the store, fetches the
+              # picture reader, prepares the pack and loads 68 GB. A single-shot `/health` therefore
+              # fails whenever the server is slow, which is EVERY operator's first `charly config &&
+              # charly start` — and a check that fails for being early teaches operators to ignore the
+              # gate. On a prepared volume it answers in seconds.
+              eventually: "1800s"
+              retry_interval: "15s"
               http:
                   http: "http://127.0.0.1:${HOST_PORT:8080}/health"
                   status: 200
-            - check: the server is up with the deployment's key and publishes the projection
+            - check: the component this pod would start is usable and signed against the card CDI injected
+              id: strata-engine-usable
+              context: [runtime]
+              timeout: 900s
+              exit_status: 0
+              # The other half of `strata-engine-component`, and the half only a device-bearing host can
+              # answer: here the backend is NOT forced, so upstream's resolver asks this machine what it
+              # needs. `usable: true` therefore means the CDI-injected driver is visible inside the
+              # container, the card's CUDA arch is covered by the package, and every file of the signed
+              # component matches. A pod whose `/dev/nvidia*` did not arrive fails here.
+              command: |
+                  /opt/strata/terminal/python/bin/python3 - <<'PY'
+                  import json, subprocess, sys
+                  report = json.loads(subprocess.run(
+                      ["/opt/strata/terminal/bin/strata", "components", "engine", "--output", "json"],
+                      capture_output=True, text=True).stdout)
+                  engine = report.get("engine") or {}
+                  print(json.dumps({"usable": report.get("usable"), "backend": report.get("backend"),
+                                    "notice": report.get("notice"), "version": engine.get("version"),
+                                    "signed": engine.get("signed")}))
+                  ok = (report.get("usable") is True and report.get("backend") == "cuda"
+                        and engine.get("signed") is True)
+                  sys.exit(0 if ok else 1)
+                  PY
+            - check: /health publishes the projection a client sizes itself from
               id: strata-projection
               context: [runtime]
+              timeout: 1900s
               exit_status: 0
-              # What THIS check can honestly prove: /health answers (pre-auth by design), the key the
-              # deployment supplied actually reached the engine (`api_key`), and the projection FIELDS
-              # are published at all. It deliberately does NOT assert the projection's VALUES.
-              #
-              # Why not: the deterministic bed runs the scripted engine, which is started with NO run
-              # config, so `max_context` and `images` come from the engine's own defaults -- measured
-              # 32768 and false. The bed's CONTEXT happens to equal that default, so an equality
-              # assertion would pass by coincidence and could not fail (R7). The VALUES are asserted
-              # where a real config exists: the GPU bed's own step, which is the only place the
-              # env -> config -> server chain is provable.
-              command: >-
-                  python3 -c "import json,os,sys,urllib.request;
-                  h=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'));
-                  fields=('max_context','images','model');
-                  sys.exit(0 if h.get('status')=='ok' and isinstance(h.get('api_key'), bool)
-                             and all(f in h for f in fields) else 1)"
-            - check: the API gate is real once a key is set, so /v1/models needs it
+              # What THIS check can honestly prove on any deployment: /health answers (pre-auth by
+              # design, so it needs no secret), the key posture is a bool, and the projection FIELDS are
+              # published at all. It deliberately does NOT assert the VALUES: those come from the
+              # deployment's env and its model, so they belong to the bed that declares them.
+              # `eventually` is the documented poll-until-pass matcher, not a sleep: a fresh store loads
+              # the model (and, with pictures on, fetches the reader) before the server answers.
+              eventually: "1800s"
+              retry_interval: "15s"
+              command: /opt/strata/terminal/python/bin/python3 /opt/strata/charly-probes.py health
+            - check: the /v1 gate matches this deployment's key posture
               id: strata-api-gate
               context: [runtime]
+              timeout: 1000s
               exit_status: 0
-              command: >-
-                  python3 -c "import json,os,sys,urllib.request;
-                  r=urllib.request.Request('http://127.0.0.1:8080/v1/models',headers={'Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
-                  sys.exit(0 if json.load(urllib.request.urlopen(r)).get('data') else 1)"
-            - check: "the gate matches this keyless deployment -- /v1/models answers 200 unauthenticated"
-              id: strata-api-gate-open
-              context: [runtime]
-              # The key is OPTIONAL (secret_accept): a local pod with no key serves /v1/* openly,
-              # and a pod WITH one must refuse an unauthenticated read. Asserting a fixed 401
-              # regardless would make a keyless local deployment permanently red, and asserting a
-              # fixed 200 would leave a configured key unproven. The negative control therefore
-              # keys off whether this deployment supplied a secret.
-              # This bed deploys the LOCAL posture: the key is optional and unset, so /v1/*
-              # is served openly. A declarative 200 is the honest assertion — the previous
-              # shell test read STRATA_API_KEY, which an assert-only step does not export, so
-              # it was DEAD (measured: "assertion is DEAD ... STRATA_API_KEY is empty").
-              # The keyed posture is covered by the candy's secret_accept contract, not here.
-              http:
-                  http: "http://127.0.0.1:${HOST_PORT:8080}/v1/models"
-                  status: 200
+              # Upstream serves nothing beyond loopback without a key, and a key is always on: the
+              # deployment's `API_KEY`, else one minted into the volume. So the honest assertion is
+              # posture-BRANCHED rather than a fixed 401 (which would be red on a keyless local pod) or
+              # a fixed 200 (which would leave a configured key unproven):
+              #   key in force -> /v1/models must answer 401 without it and 200 with it
+              #   no key       -> /v1/models must answer 200
+              eventually: "900s"
+              retry_interval: "15s"
+              command: /opt/strata/terminal/python/bin/python3 /opt/strata/charly-probes.py models
             - check: "a completion round-trips, with reasoning_effort none and room for the answer"
               id: strata-completion
               context: [runtime]
+              timeout: 1000s
               exit_status: 0
-              # The engine loads ~64 GB of weights after the server starts listening, so the first
-              # completion can wait longer than any per-request timeout. `eventually` is the
-              # documented poll-until-pass matcher (verb catalog, "Step fields"), not a sleep: the
-              # FIRST pass returns immediately, and a failure reports its attempt count and elapsed
-              # time rather than a bare timeout. Measured: check-live took 41s in the failing run
-              # versus 10s once the load had been given room.
-              eventually: "300s"
-              retry_interval: "5s"
-              # Two measured traps sit behind this probe, either of which would make it assert
-              # nothing: the engine defaults to thinking, and a small max_tokens truncates the
-              # answer to `content: null` with finish_reason "length" (measured at 16 tokens).
-              # With reasoning_effort none AND max_tokens 64 the content is non-null and
-              # finish_reason is "stop".
-              command: >-
-                  python3 -c "import json,os,sys,urllib.request;
-                  body=json.dumps({'model':'strata','messages':[{'role':'user','content':'say hi'}],'max_tokens':64,'reasoning_effort':'none'}).encode();
-                  r=urllib.request.Request('http://127.0.0.1:8080/v1/chat/completions',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ.get('STRATA_API_KEY','')});
-                  c=json.load(urllib.request.urlopen(r))['choices'][0];
-                  sys.exit(0 if c['message'].get('content') and c.get('finish_reason')=='stop' else 1)"
+              # Two measured traps sit behind this probe, either of which would make it assert nothing:
+              # the engine defaults to thinking, and a small max_tokens truncates the answer to
+              # `content: null` with finish_reason "length" (measured at 16 tokens). With
+              # reasoning_effort none AND max_tokens 64 the content is non-null and finish_reason is
+              # "stop".
+              eventually: "900s"
+              retry_interval: "15s"
+              command: /opt/strata/terminal/python/bin/python3 /opt/strata/charly-probes.py chat
 
 strata-layer-skill:
     skill:
@@ -515,5 +719,5 @@ strata-layer-skill:
         owner: strata
         triggers:
             - 'the strata layer / composing an image that must SERVE the Strata engine'
-            - 'the Strata engine baked into an image / the setup-choice surface / the env: config overlay'
+            - 'the Strata released release artifacts / the engine component / the POD (CDI) GPU contract of the strata image'
         category: images

@@ -1,115 +1,135 @@
 ---
 name: strata-layer
-description: 'The `strata` LAYER — the engine itself: baked from the pinned upstream
-  tag, with the
-
-  setup-choice surface, the rootless XDG model store, the supervised service and the
-
-  config-overlay merge. Use when composing an image that must SERVE Qwen3.8-Flash-Next,
-  or
-
-  when a deployment''s `env:` must reach the engine. For merely talking to a running
-  server
-
-  from the host, use the `strata` plugin skill instead.'
+description: 'The `strata` LAYER — the engine itself: installed from upstream''s PUBLISHED
+  Strata release artifacts (Terminal + signed engine component) and run by upstream''s own
+  container entrypoint, under the POD (CDI) GPU contract, with the rootless model store on
+  the volume. Use when composing an image that must SERVE Qwen3.8-Flash-Next, or when a
+  deployment''s `env:` must reach the engine. For merely talking to a running server from
+  the host, use the `strata` plugin skill instead.'
 ---
 
 # strata-layer
 
-The engine layer behind `box/strata`. It installs Strata from a pinned tag and **bakes the
-CUDA engine into the image** exactly the way upstream's own Dockerfile does, so a fresh
-volume's first start reuses the engine instead of compiling for 20-40 minutes.
+The engine layer behind `box/strata`. Since upstream **v0.2.16** it installs the two artifacts
+upstream PUBLISHES — the Terminal (a bundled CPython + the `strata` CLI) and a signed,
+self-contained engine COMPONENT — and runs them through upstream's own `tools/docker/entrypoint.sh`.
+Nothing is compiled, so the image needs no CUDA toolkit, no `nvcc` and no driver user-space:
+the engine component bundles `libcudart`/`libcublas`/`libcublasLt`, and the driver arrives from
+the HOST through CDI. A fresh volume's first start still never compiles anything — that part
+of the layer's job is unchanged; only the mechanism moved.
 
 ## What a consumer must supply
 
 | Thing | Why |
 |---|---|
-| `security: {group_add: [keep-groups]}` or CDI | the engine needs the GPU device |
-| a **writable** `/data` on the first start | the pack build and the `.done` markers |
-| `secret: [{name: STRATA_API_KEY}]` | the pod publishes :8080; the candy requires a key |
+| the POD GPU contract (`layer-cdi`, or an image that composes it) | the engine loads `libcuda`, which the runtime injects per container; the toolkit must NOT be baked (it shadows the host's NVML) |
+| a **writable** `/data` | presets, run settings, the prepared pack, the encoder file and the API key all live there |
+| the required `API_KEY` secret (the candy's `secret_require:`) | upstream refuses to serve beyond loopback without a key. **A deploy of this image is not instantiable until `charly config` has run once**, because that is what mints `charly/secret/API_KEY` and writes `Secret=…,type=env,target=API_KEY` into the unit; a deployment configured some other way must supply `API_KEY` itself. Upstream mints its own key only when it is handed nothing |
 | a **bind** for the model store | `{name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}` — rootless, XDG; a candy can never pin a host path |
 
-## The configuration surface
+## The configuration surface — upstream's own names, renamed by nothing
 
-Everything is the deployment's `env:` — the engine's own documented variables, renamed by
-nothing: `FAMILY`, `MODEL`, `CONTEXT`, `VISION`, `KV`, `GPU`, `GPUS`, `LAYER_SPLIT`,
-`LOW_RAM`, `RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `REINSTALL`, `GGUF_DIR`, plus
-`STRATA_RUN_ARGS` for an external model's extra engine argv (a community pack's own
-`--pack/--native/--ple-gguf/--mtp`), and `STRATA_OVERLAY_JSON` for the
-server-behaviour keys. `LOW_RAM` is always passed through:
-`setup.py` measures RAM from `/proc/meminfo`, which in a container is the HOST's total,
-so a memory-capped container must ask for the low-RAM path itself.
+Everything is the deployment's `env:`; the candy's `env:` carries the documented defaults.
+`MODEL`, `FAMILY`, `MODEL_PATH`, `CONTEXT`, `PARALLEL`, `VISION`, `KV`, `DRAFTING`,
+`DRAFT_VOCAB`, `GPU`/`GPUS`, `GPU_ROLES`, `TUNE`, `PRESET`, `STRATA_SET`, `PORT`, and `API_KEY`
+as the secret. The entrypoint turns each into the corresponding `strata launch` flag.
 
-Two defaults matter before you change them. `CONTEXT` is **`65536`** — an agent client needs the
-room (one Hermes Agent turn measures ~12K prompt tokens before it acts), and it is affordable because
-the KV cache STREAMS to system RAM from 64K up, which upstream's setup satisfies by writing
-`--kv-resident 32768`. `STRATA_RUN_ARGS` carries **`--vram-reserve-mib 1024`**, the reserve that 64K
-needs on a small card: measured on a 16 GB card, the engine's own 700-MiB default left a request
-413 MiB free and warned (#2065), and 960 still left 509 MiB — 3 MiB under the engine's own 512-MiB
-threshold — so the number the engine asked for is 1024. `CONTEXT` is an INSTALL-TIME choice (an
-installed config keeps its recorded `--max-context`; an existing deployment moves with
-`STRATA_RUN_ARGS`), while `VISION` is applied on every start — the asymmetry is deliberate and
-recorded in `LEDGER.md` (V2 vs V9). A deployment that sets `STRATA_RUN_ARGS` owns the WHOLE string,
-so include your own reserve (and `--kv-resident` when you raise the context).
+**Ignored upstream, therefore deleted here.** `HOST`, `LOW_RAM`, `REINSTALL`,
+`RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `LAYER_SPLIT` and `CONFIG` are from the older image:
+the v0.2.16 entrypoint WARNS and ignores them. `GGUF_DIR` still works upstream as an alias of
+`MODEL_PATH`, and is not emitted here — one surface per thing. The charly-only knobs are gone
+too: `STRATA_RUN_ARGS` and `STRATA_OVERLAY_JSON` had no counterpart because the run config is
+upstream's now (`strata profile`, `strata launch --set`, `STRATA_SET`).
 
-### Pictures (`VISION`) reach the engine through a charly-owned pass
+### Defaults that matter before you change them
 
-`VISION` defaults to `cpu`: pictures are **on**, read by the image encoder on the CPU, and
-nothing is taken from the card. `gpu` reads them on the card (~1.2-1.4 GB of VRAM), `no`/`off`
-turns them off. `yes`/`on` mean `cpu` here and say so — upstream maps `--vision yes` to the GPU
-reader, and this family deliberately does not, because the expert cache already runs VRAM-tight.
+`CONTEXT` is **`65536`**: an agent client needs the room (one Hermes Agent turn measures ~12K
+prompt tokens before it acts), and it is affordable because the KV cache STREAMS to system RAM
+from 64K up. It is a **setup-time** choice — the launcher records it as the run settings'
+`--max-context`, and a model already set up keeps its recorded value. An existing deployment
+moves by re-saving its preset (or by dropping the run settings in `/data/install`, which the
+entrypoint does BY ITSELF when they name another card, saying so in one line).
 
-`VISION` is applied on **every** start by `charly-vision.py`, not only the first: upstream writes
-the run config's `vision` section in `setup.py`, and `setup.py` does not run again once the config
-exists, so before this pass the knob was inert on every installed model (`/health` kept answering
-`"images": false`). The pass also settles the `lazy_load` pair — upstream's settings API refuses to set
-lazy loading on a model that reads images, so the pass turns it off rather than leave a config upstream
-would not write, and a deployment with pictures on loads its model at start instead of on the first
-request.
-
-The encoder is **software + data**, and the two are treated differently on purpose:
-
-| Part | Where it lives | Why |
-|---|---|---|
-| `strata-vision` binary (222 MB) | **baked into the image** by `charly-build-engine.py`, beside the engine | it is software; it must exist before the first start |
-| `mmproj-*.gguf` encoder (~0.9 GB) | fetched **once** into the model store (`/data/vision/`) | it is model data, licensed with the weights, and a model never enters the image |
-
-It is fetched from the revision-pinned URL upstream's `setup.py` names for the deployment's
-`FAMILY` (`qwen`, `swift`, `coder`, `unsloth`, `nvfp4`), verified against the server's
-`Content-Length` and the GGUF magic, then reused. Three more knobs, all empty by default:
-`VISION_MMPROJ_URL` + `VISION_MMPROJ` name the encoder EXPLICITLY — required for a model outside
-upstream's table, a community fine-tune, where nothing is borrowed silently — and
-`VISION_THREADS` / `VISION_TOKENS` override the CPU reader's thread count and the most image
-tokens a picture may become (upstream's device defaults are half the cores, 300 on the CPU and
-1024 on the card).
-
-If pictures cannot be had (no encoder for the family, no network), the pass prints ONE line and the
-server serves text: upstream's own posture. A non-zero exit means a configuration ERROR, not a
-missing download.
+`VISION: cpu` and **pictures are ON by default** — the family's posture, not upstream's (upstream
+defaults to `off`). `cpu` reads images with the encoder on the CPU and takes nothing from the
+card; `gpu` reads them on the card (~1.2-1.4 GB of VRAM); `off` turns them off. The `vision`
+setting is applied by upstream's launcher on every start, which is why the charly vision pass
+that used to exist is gone (ledger `P5`): the mechanism it patched — a run config written once
+by `setup.py` and never rewritten — no longer exists.
 
 ## What it probes
 
-The candy carries the probes, so every composing image and bed inherits all thirteen of them.
-At **build**: the engine binary exists, the stamp records `source: local` with matching
-`archs`/`src`, the helper scripts plus the venv are installed, the image-encoder binary is baked
-with a stamp that records an encoder build, the family/encoder table equals upstream `setup.py`'s
-own, and the vision pass is driven once against a synthetic config (the section it writes, the
-encoder it reuses, the `lazy_load` it settles, and that a second run is a no-op). At **runtime**:
-`/health` answers, the deployment's key reached the engine, the `/v1/*` gate is open WITH
-the key and closed WITHOUT it, and a `reasoning_effort: none` completion round-trips.
+Eleven probes — six at build and five at runtime — and every composing image and bed inherits them.
 
-There is deliberately **no** candy-level probe that EXECUTES the engine binary: it loads
-libcuda, which CDI injects only at runtime on a device-bearing host, so such a probe would
-break the one bed whose purpose is to need no card. The binary-versus-stamp check lives in
-`check-strata-gpu-pod` instead, where a device exists.
+At **build** (no card needed, and proven so):
+- the Terminal's launcher is installed (`strata-terminal-binary`), and it reports BOTH pinned
+  versions — `strata 0.2.16 (build 0.1.62; …)` (`strata-terminal-version`);
+- the engine component's signed manifest is installed at the pinned component id
+  (`strata-engine-manifest`), and the component passes **upstream's own verifier**
+  (`strata-engine-component`): `strata components engine --output json` → `usable: true`,
+  `signed: true`, `version 0.1.62`, `backend cuda`, `variant cuda13`. The signature is never
+  re-implemented here;
+- the encoder binary ships inside the component (`strata-vision-binary`), and upstream's three
+  container scripts are installed and executable (`strata-container-scripts`).
+
+`strata-engine-component` runs with **`STRATA_ENGINE_BACKEND=cuda`** — upstream's own environment
+override, which its docstring says the tests and the support desk use. That is deliberate and it
+is the difference between a check about the ARTIFACT and a check about the BUILDER: without it the
+resolver first asks the machine which backend it needs, and a builder with no card in
+`/sys/bus/pci` answers "cpu", so a good CUDA package would read as unusable on the builder and
+usable on the venue. With the backend named, `usable: true` means platform + backend + signature
++ file sizes + the entrypoint's sha256 + its executable bit. **Whether a CARD is present is the
+runtime probe's question.**
+
+At **runtime**: `/health` answers (host side, through the published port, pre-auth by design),
+the component is `usable: true` and `signed: true` against the card CDI actually injected
+(`strata-engine-usable` — the backend is NOT forced here), the projection is well formed
+(`strata-projection`), the `/v1` gate matches the deployment's key posture
+(`strata-api-gate`: 401 without the key and 200 with it when one is in force, 200 when none is),
+and a `reasoning_effort: none` completion round-trips (`strata-completion`).
+
+Those last three ask the server through **one** helper the layer installs,
+`/opt/strata/charly-probes.py` (`health`/`models`/`chat`/`vision`). It is a probe driver, not a
+runtime component: it never starts, configures or supervises anything, and the only state it
+reads is the key upstream writes to `/data/state/api-key` from `strata launch --show-key`. The
+bed uses the same helper, so the projection is read by one implementation everywhere (R2).
+
+There is deliberately **no** probe that starts the engine: it needs `libcuda`, which CDI injects
+only at runtime on a device-bearing host, so such a build-context check would break the one thing
+a build context must be able to do — build without a card.
+
+## Pitfalls this layer already paid for
+
+- **The first start MIGRATES an older volume.** `/data/models`, `/data/packs` and `/data/mtp` are
+  renamed into `/data/Strata-data/` (rename-only, idempotent, and it skips anything that is its
+  own mount). It is a ONE-WAY DOOR for a rollback to a v0.1.x image, which reads `/data/models`.
+  `/data/vision` is NOT in the move list, so a pictures-on first start fetches the encoder again
+  (~0.9 GB).
+- **`MODEL_PATH` must name the folder that holds the shards**, not a parent: the entrypoint
+  refuses a folder with no `.gguf` in it and says which sub-folder to name, rather than
+  downloading tens of GB. A folder that is not in the container at all stops the start at once.
+- **A key is always on, and it is REQUIRED.** The candy declares `secret_require: [{name:
+  API_KEY}]`, so `charly config` mints a value for it and the unit carries
+  `Secret=…,type=env,target=API_KEY`. A `secret_accept` would document a keyless posture that
+  cannot exist — and, measured, an accepted name with no stored value injects NOTHING at all.
+  Upstream still mints its own key when it is handed none, keeps it in `/data/state/api-key`
+  (`strata launch --show-key --preset docker`), and warns when a key is shorter than 16
+  characters.
+- **The container needs read+execute on `/opt/strata`** for uid 1000, which owns nothing there.
+  The layer grants `a+rX` rather than a `chown`: nothing in the tree is written at run time
+  (the Terminal's CPython compiles nothing — its `.pyc` files ship in the archive), and a `chown`
+  would hardcode a uid that `user_policy` can move.
+- **The terminal's CPython is the interpreter** (`/opt/strata/terminal/python/bin/python3`). This
+  candy installs no distro `python`, so a bare `python3` in a probe would depend on a package
+  nothing here declares.
+- **`download:` cannot carry a digest** (charly's `#Op` has no checksum field), so the two
+  archives are fetched by a `run:` step that verifies the pinned sha256 and unpacks in the SAME
+  layer. That is not a style choice: a `download:` into a staging path plus a later delete would
+  leave 674 MB of archives in a lower layer forever. Filed as `opencharly/spec#397`.
 
 ## Related
 
-- `/charly-strata:strata` — the BOX (this layer on the CachyOS base).
-- `charly strata` — the host-side management CLI, shipped by the out-of-tree
-  `opencharly/plugin-strata` command plugin. That plugin owns no `skill:` entity, so it has
-  no `/family:skill` ref of its own; naming it here in prose avoids colliding with the box's
-  ref above.
-- `/charly-ollama:ollama-layer` — the other local inference server in the org; it is
-  GPU-agnostic and serves many small models, while this one is CUDA-only and serves one
-  large one.
+- `/charly-strata:strata` — the BOX (this layer composed on the POD GPU contract base).
+- `/charly-strata:strata-cli` — talks to a RUNNING server from the host (a different job).
+- `/charly-ollama:ollama-layer` — the other local inference server in the org: GPU-agnostic and
+  many small models, while this one is CUDA-only and serves one large one.

@@ -3,71 +3,99 @@
 Strata — run **Qwen3.8-Flash-Next**, a 125B-parameter MoE, on one consumer NVIDIA card plus system
 RAM, and talk to it over an OpenAI-, Anthropic- or Responses-compatible API on port 8080.
 
-This repo is the charly family for it: the layer (`candy/strata`), the image (`box/strata`) and the
-beds. It targets the **CachyOS** family, runs **rootless**, and keeps the model weights on your own
-disk rather than inside the image.
+This repo is the charly layer for it: the candy (`candy/strata`), the image (`box/strata`) and the
+bed. It installs upstream's **published** release artifacts — the Terminal and a signed engine
+component — so nothing is compiled, the image needs no CUDA toolkit, and the GPU driver arrives from
+the host through CDI. It runs **rootless** and keeps the model weights on your own disk.
 
 ## Quick start
 
 ```sh
-charly box build strata                  # bakes the engine in (~5.6 GB of CUDA toolkit at build time)
-mkdir -p ~/.local/share/strata           # the model store: rootless, XDG
+charly box build strata                            # installs two release archives; no compiler, no GPU needed to build
+mkdir -p ~/.local/share/strata                    # the model store: rootless, XDG
 charly config strata --bind strata-data=~/.local/share/strata   # record that host path for THIS machine
-charly start strata                      # the first start downloads the model (~70 GB) and serves
+charly start strata                               # the first start downloads the model (~70 GB) and serves
 ```
 
-Point any client at `http://127.0.0.1:8080/v1` (OpenAI), `/v1/messages` (Anthropic) or
-`/v1/responses` (Codex), with `STRATA_API_KEY` as the bearer token. `GET /health` answers without it,
-by design, so a liveness probe never needs the secret.
+Point any client at `http://127.0.0.1:8080/v1` (OpenAI), `http://127.0.0.1:8080` (Anthropic) or
+`/v1/responses` (Codex). Every request needs `Authorization: Bearer <key>`; `GET /health` answers
+without one, by design, so a liveness probe never needs the secret.
 
 ## Requirements
 
-An NVIDIA RTX 20/30/40/50 with **12 GB+ VRAM**, a driver **>= 580**, **32 GB+ of RAM** (64 GB runs
-every size), **~80 GB of free disk** for the model plus ~6 GB for the MTP layer (and ~0.9 GB for the
-picture encoder, fetched on the first start with pictures on), and an AVX2 CPU. The engine has no
-CPU-only mode.
+An NVIDIA RTX 20/30/40/50 with **12 GB+ VRAM**, a driver **>= 580.65** (the engine component's own
+`min_driver`), **32 GB+ of RAM** (64 GB runs every size), **~80 GB of free disk** for the model plus
+~6 GB for the draft layer (and ~0.9 GB for the picture encoder if pictures are on), and an AVX2 CPU.
+The engine has no CPU-only mode. The **host** needs the NVIDIA container toolkit and a CDI spec
+(`nvidia-ctk cdi generate`, `/etc/cdi/nvidia.yaml`); the **image** needs neither.
 
 ## Configuration
 
-Everything is the deployment's `env:` — FAMILY, MODEL, CONTEXT, VISION, KV, GPU, GPUS, LAYER_SPLIT,
-LOW_RAM, GGUF_DIR, RESIDENT_BUDGET_GIB, KV_STREAMING, REINSTALL, the engine's `STRATA_*` tuning
-variables, and two surfaces for a model outside `setup.py`'s menu: `STRATA_RUN_ARGS` (extra engine
-argv, merged into the run config's `args` at every start) and `STRATA_OVERLAY_JSON` (an overlay merged
-into the config on the volume). See "Deploying a model outside the setup menu" below. The candy's `var:` block carries the documented defaults, and `STRATA_ENGINE=mock` runs
-upstream's scripted engine with no GPU and no model — which is how the deterministic bed proves the
-image without a card.
+Everything is the deployment's `env:`, under upstream's own names — nothing is renamed. The candy's
+`env:` block carries these defaults.
 
-See `AGENTS.md` for the invariants an author must keep (the engine bake, the config-ownership rule,
-and why the weights never enter the image). `LEDGER.md` carries the decision record for the
-pictures-on default, including the measured evidence behind it.
+```yaml
+strata:
+  pod:
+    image: strata
+    env:
+      FAMILY: qwen              # qwen | swift | coder | unsloth | nvfp4 (each has its own picture reader)
+      MODEL: IQ2_XS             # the size to install on a FRESH store
+      MODEL_PATH: ""            # GGUF files you already have (a folder of shards) — nothing is downloaded
+      CONTEXT: "65536"          # how much text it remembers at once
+      VISION: cpu               # pictures: cpu (on, CPU reader) | gpu | off
+      KV: ""                    # conversation memory format; empty = the engine's choice
+      GPU: ""                   # card numbers, e.g. "0" or "0,1"; empty = all that fit
+    volume:
+      - {name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}
+    port: [8080]
+    # No `secret:` entry: the layer declares `API_KEY` as a required secret, so charly supplies it.
+```
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MODEL` | `IQ2_XS` | the size to install on a FRESH store; ignored once the store has run settings |
+| `FAMILY` | `qwen` | which upstream family this model belongs to; also selects the picture reader |
+| `MODEL_PATH` | empty | GGUF files you already have — a folder whose `.gguf` shards sit directly in it, or one file. **Nothing is downloaded for the model itself**; the prepared pack is still made in the volume |
+| `ALLOW_DOWNLOAD` | `0` | `1` goes ahead when model files of the OLDER layout are still in `/data/models` (which this image does not read) instead of stopping |
+| `CONTEXT` | `65536` | how much text it remembers at once: `32k`, `64k`, `128k`, `256k` or a number |
+| `PARALLEL` | fitted | requests answered at the same time, 1 to 8 |
+| `VISION` | `cpu` here (`off` upstream) | `cpu` (on, CPU reader), `gpu` (on, card reader), `off`; `on`/`yes` let upstream pick the reader by the card's memory |
+| `KV` | `int8` | conversation memory format: `int8`, `q4_0` (half the memory), `k8v4`, `fp16` |
+| `DRAFTING` | `auto` | which drafter guesses ahead: `auto`, `mtp`, `dflash2`, `off` |
+| `DRAFT_VOCAB` | from the container's languages | which tokens the drafter may guess: `cjk`, `en`, `cyrillic`, `fr`, `latin` |
+| `GPU` / `GPUS` | all that fit | card numbers as the monitor lists them |
+| `GPU_ROLES` | none | a role per card, e.g. `1=main,0=helper` — not together with `GPU`/`GPUS` |
+| `TUNE` | `skip` | `quick`/`thorough` tune ONCE per preset (up to ~20/120 minutes on the first start) and keep the result |
+| `PRESET` | `docker` | the preset name in `/data`; the settings above are saved into it |
+| `STRATA_SET` | none | advanced engine settings, space separated `KEY=VALUE` (like `strata launch --set`) |
+| `PORT` | `8080` | the port inside the container |
+| `API_KEY` | minted | the key clients must send — see "The API key" |
+
+`GET /health` and the engine's own `GET /config` are the authority for runtime behaviour; anything
+beyond this table is the engine's surface, reached through `STRATA_SET` or `strata profile` inside
+the container (`charly cmd strata -- strata profile set parallel=4`), not a charly knob.
 
 ## Context: 64K by default
 
-`CONTEXT` defaults to **`65536`**, and `STRATA_RUN_ARGS` defaults to **`--vram-reserve-mib 1024`**.
-The engine's own recommendation for a small card is lower (32768 at ≤16.5 GB of VRAM), so this is a
-deliberate default for agent clients — one Hermes Agent turn measures ~12K prompt tokens before it
-does anything — and it works because the KV cache streams to system RAM from 64K up. The reserve is
-the part that makes 64K safe on a small card: measured at 64K on a 16 GB card, the engine's own
-700-MiB default left a request 413 MiB of VRAM free and warned that the driver can page GPU memory
-to RAM (upstream #2065); 960 still measured 509 MiB — 3 MiB under the engine's 512-MiB threshold —
-and 1024 clears it.
+`CONTEXT` defaults to **`65536`**. The engine's own recommendation for a small card is lower
+(32768 at ≤16.5 GB of VRAM), so this is a deliberate default for agent clients — one Hermes Agent
+turn measures ~12K prompt tokens before it does anything — and it is affordable because the KV
+cache streams to system RAM from 64K up.
 
-`CONTEXT` is an **install-time** choice: an installed config keeps its recorded `--max-context`, so
-moving an existing deployment is a `STRATA_RUN_ARGS` change:
-
-```sh
-charly config strata -i <instance> -e "STRATA_RUN_ARGS=--max-context 65536 --kv-resident 32768 --vram-reserve-mib 1024"
-charly restart strata -i <instance>
-```
-
-A deployment that sets `STRATA_RUN_ARGS` owns the whole string — the candy's reserve default does not
-merge with yours. The model's trained length is 262144; past that, upstream's setup requires rope
-scaling (yarn), at a quality cost.
+It is a **setup-time** choice: the launcher records it in the run settings, and a model that is
+already set up keeps its recorded value. An existing deployment moves by starting again with the
+new `CONTEXT` (any start with settings re-saves the preset), or by letting the entrypoint drop run
+settings that name another card — which it does by itself and says so in one line. The model's
+trained length is 262144; past that, upstream's setup requires rope scaling (yarn), at a quality
+cost.
 
 ## Pictures
 
-**They are on by default.** Send an `image_url` part (a `data:` URL, an `http(s)` URL or a local
-file path) or an Anthropic `image` block, and the model reads it:
+**On by default:** `VISION: cpu` reads images with the encoder on the CPU, which takes nothing from
+the card — deliberate here, because this engine's expert cache already runs VRAM-tight (measured on
+a 16 GB card: 413 MiB free with everything loaded). `VISION: gpu` opts into the card's reader
+(~1.2-1.4 GB of VRAM); `VISION: off` turns pictures off.
 
 ```python
 import base64
@@ -80,108 +108,85 @@ r = client.chat.completions.create(model="strata", messages=[{"role": "user", "c
 print(r.choices[0].message.content)
 ```
 
-`VISION` picks the reader: `cpu` (the default) reads pictures on the CPU and takes nothing from the
-card; `gpu` reads them on the card at a cost of ~1.2-1.4 GB of VRAM; `no` turns them off. `yes`/`on`
-mean `cpu` here — upstream maps `--vision yes` to the card's reader, and this family does not, because
-the expert cache already runs VRAM-tight (`VISION: gpu` asks for it by name). `VISION_THREADS` and
-`VISION_TOKENS` tune the CPU reader's threads and the most image tokens a picture may become.
+Two things are worth knowing:
 
-`VISION` takes effect on **every** start, including on an already-installed model: a charly-owned pass
-(`candy/strata/charly-vision.py`) writes the engine's run config for you. With pictures on, the model
-loads at container start rather than on the first request — upstream's settings API refuses to set lazy
-loading on a model that reads images, so the pass turns it off rather than leave a config upstream
-would not write.
+- **The encoder is software + data, treated differently on purpose.** The `strata-vision` binary
+  ships inside the engine component (it must exist before the first start); the encoder file
+  (`mmproj-*.gguf`, ~0.9 GB) is model data, fetched once into the store and reused, never baked.
+- **A community fine-tune uses its family's reader.** Point `FAMILY` at the family whose
+  architecture the fine-tune shares; upstream ships one reader per family. The reader is chosen by
+  the launcher, so this repo has no reader table of its own to fall out of step.
 
-Two things are worth knowing when you supply your own encoder:
+## What is in the image, and what is not
 
-- The **software** is in the image: the `strata-vision` encoder binary is baked beside the engine.
-  The **encoder file** is model data: it is fetched once into the model store (`<store>/vision/`) and
-  reused, never baked into the image.
-- Upstream ships one encoder per family (qwen, swift, coder, unsloth, nvfp4) and none for `qwen36`.
-  For a **community fine-tune** — anything outside that table — name your own with
-  `VISION_MMPROJ_URL` (and optionally `VISION_MMPROJ`); until you do, pictures stay off and one line
-  in the log says so. Measured workable: an uncensored IQ3_XXS community pack reads pictures correctly
-  through the base model's BF16 encoder once named — but that is the deployment's claim, not a default
-  this repo makes for it.
+| Thing | Where | Why |
+|---|---|---|
+| the Terminal (`/opt/strata/terminal`) | **image** | the `strata` CLI + a bundled CPython 3.12, installed from the release archive |
+| the engine component (`/opt/strata/components/engine/<component>/`) | **image** | the signed, self-contained CUDA-13 engine package: `strata`, `strata-vision`, `libcudart`/`libcublas` |
+| upstream's container scripts (`entrypoint.sh`, `healthcheck.sh`, `strata` wrapper) | **image** | they ARE the runtime contract |
+| the weights (37-188 GB) | **store** (`/data/Strata-data/models`) | licensed separately (Qwen Community License 1.0 / Apache-2.0 / Swift Open License); they never enter the image |
+| the prepared pack, the draft layer | **store** (`/data/Strata-data/{packs,mtp}`) | made in the volume on the first start, reused after |
+| the encoder file (`mmproj-*.gguf`) | **store** | model data, fetched once |
+| the presets, run settings, the API key | **store** (`/data/{state,install}`) | upstream's own layout |
+
+## The API key
+
+Upstream listens on every address **inside** the container (that is what lets the published port
+work) and refuses to serve beyond loopback without a key, so a key is always on:
+
+- **charly sets it for you, and it must.** The layer declares `API_KEY` as a required secret, so the
+  `charly config` in the quick start is what mints a 32-byte token into the credential store and
+  writes `Secret=…,type=env,target=API_KEY` into the unit. A deployment configured some other way
+  must supply `API_KEY` itself. To choose your own key, store it first and re-configure:
+  `charly secrets set charly/secret/API_KEY "$(openssl rand -hex 24)"` then
+  `charly config strata -i <instance>`.
+- **If nothing is supplied at all**, upstream mints one on the first start, keeps it in the volume,
+  and the log says how to read it — `charly cmd strata -- strata launch --show-key --preset docker`.
+
+`GET /health` answers without a key; every other `/v1/*` request needs it.
+
+## First start — what it does to your store, once
+
+Upstream's entrypoint migrates an older volume **in place**, by rename (instant, nothing copied and
+nothing downloaded again):
+
+```
+/data/models, /data/packs, /data/mtp   ->   /data/Strata-data/{models,packs,mtp}
+```
+
+A folder that is its own mount is never touched. **This is a one-way door for a rollback to a
+v0.1.x image**, which reads `/data/models`: to go back, move `/data/Strata-data/{models,packs,mtp}`
+back to `/data/`. `/data/vision` is not in the move list, so a pictures-on first start fetches the
+encoder again (~0.9 GB).
+
+After that the first start downloads the model (~70 GB at `IQ2_XS`, if `MODEL_PATH` does not point
+at files you already have), makes the pack, and loads it. Later starts load from the volume.
+
+## Verify it
+
+- `charly check live strata` — `/health` 200 (pre-auth by design), the component `usable`/`signed`
+  against the card CDI injected, the projection well formed, the `/v1` gate matching the
+  deployment's key posture, and a completion round-tripping with `reasoning_effort: none`.
+- `charly check run strata.check-strata-gpu-pod` — the family's ONLY bed: the real engine, a
+  provisioned store, the projection the deployment asked for, `images: true` by the candy's own
+  DEFAULT, one real PNG round-trip whose answer names the colour, and `strata --version` reporting
+  the pinned build as uid 1000. It needs the GPU venue and the staged shards, so it is run on
+  demand and excluded from the default roster.
+- `charly strata version|status|models|props|config|metrics` — the host-side management CLI (the
+  out-of-tree `opencharly/plugin-strata` command plugin), speaking the same HTTP API.
 
 ## Deploying a model outside the setup menu
 
-`setup.py` ships a fixed catalogue. A community model — a fine-tune, an uncensored variant, a
-different quantisation of the same architecture — is deployed by pointing the engine at its own pack
-and shards.
-
-**Two different surfaces are involved, and only one of them is `charly`'s.** The deployment side is
-`charly` env (`STRATA_RUN_ARGS`, below). The packing side is the **engine's own tool, run inside the
-Strata source tree** — `charly` does not wrap it and this repo does not ship it. That is deliberate:
-`iq_pack.py` needs the engine's pinned llama.cpp `gguf-py`, so it is a source-tree operation by
-construction, not a deployment command. Three things make the whole flow work, and each has a rule
-that is easy to get wrong.
-
-### 1. The surface is `STRATA_RUN_ARGS`, not a hand-edited config
-
-The run config's `args` is `SETUP_OWNED` (`candy/strata/charly-merge-config.py`), so nothing may
-rewrite it directly. `STRATA_RUN_ARGS` is the sanctioned surface: a shell-quoted extra argv merged
-into `args` at every start, where each **named** flag has its value replaced in place (or is appended
-when absent):
-
-```
-STRATA_RUN_ARGS: "--pack /data/packs/<name> --native <shard1> --ple-gguf <shard1> --mtp /data/mtp/rt"
-```
-
-`STRATA_OVERLAY_JSON` is the narrower companion: a JSON overlay merged into the config on the
-volume, for values that belong in the config rather than in argv. Use `STRATA_RUN_ARGS` for engine
-flags; use the overlay for config keys.
-
-A run config written **by hand** onto the volume (`/data/config/strata-<model>.json`) is also
-honoured: the entrypoint seeds a baked config only when none exists, and the install pass — the only
-place that would overwrite it — runs only when the config is absent or `REINSTALL=1`. So an existing
-hand-written config stays untouched. `STRATA_RUN_ARGS` is the declarative route; a hand-written
-config is the escape hatch.
-
-### 2. The pack decides whether the engine can read the weights at all
-
-Native kernels expect certain tensors in a specific layout. An ordinary GGUF quantises *everything*,
-including the small projections the engine reads as BF16, so a community GGUF generally has to be
-repacked before the engine can serve it.
-
-**That packing step is upstream Strata's workflow, documented by upstream** (`docs/ORCA.md` in
-`Niko1221/Strata`, which walks a real model through it) — it uses the engine's own tool against the
-engine's pinned `gguf-py`, and `charly` neither wraps it nor ships it. Nothing here repeats its
-command: this repo documents the deployment boundary, and the pack is an input to it.
-
-What belongs here is the rules that bite when following that workflow, each learned the hard way:
-
-- **Do not borrow another model's dense tensors.** The packer can take a base pack and reuse its
-  `dense.bin` and `tokenizer/`; across two different models that is wrong on both counts. A model's
-  pack must export **its own** tokenizer from its own GGUF.
-- **All split shards must be finished downloading before packing**, and the pack is built from
-  **shard 1**. `--native` and `--ple-gguf` both point at that same first shard — the PLE lookup
-  table lives there.
-- **The compatibility conversion is not free.** Expanding the small projections to BF16 rounds
-  relative to the GGUF's own dequantised weights; it does not recover the original checkpoint. The
-  pack records exactly which tensors it converted, so the cost is inspectable rather than implied.
-- **A quantisation the native expert path cannot read is not fixed by the conversion.** Check the
-  quantisation against what the engine supports before packing; the conversion addresses projections,
-  not an unsupported expert format.
-
-### 3. MTP and the arena are separate budgets
-
-The draft head (`--mtp`) is optional: without it the engine drafts by lookup only. It can be reused
-from another deployment of the same architecture, since the target model verifies its own proposals —
-but draft acceptance must be measured, not assumed.
-
-The **expert arena lives in system RAM**, not VRAM: expect tens of GiB free (the reference IQ3-level
-pack measured ~50 GiB) *plus* draft and runtime buffers. VRAM determines how much of the expert cache
-stays resident, so a smaller card makes the model slower rather than unusable — the cache adapts.
-
-### What stays local
-
-A concrete model's paths, pack name, quantisation and run config are the **deployment's** business,
-not this repo's. This repo ships the mechanism (the surface, the packing rules, the budgets); the
-deployment supplies the model.
+`MODEL_PATH` is the surface: point it at the folder holding one model's shards and nothing is
+downloaded for the model itself; the pack and the draft layer are still made in the volume. A
+community model generally has to be **packed** before the engine can read it (an ordinary GGUF
+quantises the small projections the engine reads as BF16). That packing is upstream's workflow —
+the tool ships in the image at `/opt/strata/terminal/tools/iq_pack.py`, and the upstream repo's
+`docs/` describes it. This repo documents the deployment BOUNDARY and nothing more: a concrete
+model's paths, quantisation and pack are the **deployment's** business, and they never appear here.
 
 ## Licence
 
 The engine is MIT (upstream `Niko1221/Strata`). **The model weights are not**: they carry Qwen
-Community License 1.0, Apache-2.0 (Coder) or the Swift Open License depending on the family, which is
-one reason they are downloaded to your disk rather than baked into a published image.
+Community License 1.0, Apache-2.0 (Coder) or the Swift Open License depending on the family, which
+is one reason they are downloaded to your disk rather than baked into a published image.
