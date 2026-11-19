@@ -53,7 +53,8 @@ discover:
 # every unrelated run. The umbrella's `check-all-beds` excludes it; it is run on demand with
 # `charly check run <ns>.check-strata-gpu-pod`.
 #
-# WHAT THE FIRST START DOES TO THE STORE, once (upstream's own idempotent migration, ledger §6):
+# WHAT THE FIRST START DOES TO THE STORE, once (upstream's own idempotent migration;
+# LEDGER.md, "Open risks (the first start does these; they are not defects to hide)"):
 #   /data/models, /data/packs, /data/mtp  ->  /data/Strata-data/{models,packs,mtp}
 # a rename inside the volume (no copy, nothing downloaded again). It is a ONE-WAY DOOR for a rollback to
 # a v0.1.x image, which reads `/data/models`; see the PR body's rollback line. `/data/vision` is NOT in
