@@ -341,12 +341,17 @@ differs from the engine's own 32768 recommendation for that card, so the asserti
 
 ## How this change is gated
 
-1. **Build context, no card needed** — `charly box validate`, `charly box generate strata` (the
-   emitted Containerfile and its `ai.opencharly.description` label are the artifact, and are READ),
-   `charly box build strata`, then the candy's six build probes, which include upstream's own
-   component verifier.
-2. **The live bed** — `charly check run check-strata-gpu-pod` on this venue: the real engine, the
-   provisioned store, the CDI-injected card, the key gate, a real picture and a completion.
+This is how the cutover WAS gated, at the revision this ledger records. The box and the bed now live
+in `opencharly/pod-strata`, so every command naming `strata` as a BOX or a BED runs THERE; what runs in
+this repo is `charly box validate` alone, and it checks the candy.
+
+1. **Build context, no card needed** — `charly box validate` (here), `charly box generate strata` (in
+   `pod-strata`: the emitted Containerfile and its `ai.opencharly.description` label are the artifact,
+   and are READ), `charly box build strata` (there), then the candy's six build probes, which include
+   upstream's own component verifier.
+2. **The live bed** — `charly check run check-strata-gpu-pod` (in `pod-strata`) on the GPU venue: the
+   real engine, the provisioned store, the CDI-injected card, the key gate, a real picture and a
+   completion. Its PASS at `2026.323.1728` and `2026.323.1759` is the witness this cutover cites.
 
 Every probe this change adds names an artifact that does not exist on the pre-change tree
 (`/opt/strata/terminal/`, `/opt/strata/components/engine/`, `entrypoint.sh`, `strata --version`

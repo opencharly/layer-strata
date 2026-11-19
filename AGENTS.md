@@ -84,11 +84,12 @@ before probing a deployed gateway; it is not this repo's file.
 - A change here that alters what the image CONTAINS or what the bed asserts must be proved in
   `pod-strata` (its `check-strata-gpu-pod` bed, on the GPU venue) before it lands here — the candy is
   the producer in that sequence, so the consumer's pin moves to this repo's tag afterwards.
-- `charly box generate strata` — inspect the emitted Containerfile AND its
-  `ai.opencharly.description` label. The plan steps are the artifact the validator reads, so **read
-  them** rather than trusting the source. A multi-line `command:` is emitted into that label
-  verbatim: a folded `>-` scalar inside a `python -c` program is a syntax error you will only see at
-  gate time.
+- **In `pod-strata`**, `charly box generate strata` inspects the emitted Containerfile AND its
+  `ai.opencharly.description` label — the box is that repo's now, so the command runs there. The plan
+  steps are the artifact the validator reads, so **read them** rather than trusting the source; a
+  multi-line `command:` is emitted into that label verbatim, and a folded `>-` scalar inside a
+  `python -c` program is a syntax error you will only see at gate time. The candy's own steps are
+  still written here, so read the label where it is emitted, not where it is authored.
 - The family's only bed is `pod-strata`'s `check-strata-gpu-pod` (`strata.check-strata-gpu-pod` from
   the umbrella). It runs the real engine, so it needs the **GPU venue** and a **provisioned model
   store**, and is run on demand rather than in the default roster. This repo's own gate for a
