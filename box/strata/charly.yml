@@ -1,27 +1,53 @@
 strata:
     candy:
-        # The Strata family's image. It composes exactly one candy — this repo's layer — and the GPU
-        # stack arrives transitively through that candy's `require:` (nvidia + cuda + supervisord +
-        # build-toolchain), so the image and the layer can never disagree about the GPU contract.
+        # The Strata family's image, and — as of the v0.2.16 cutover — the FINAL composition (ledger
+        # D-2): the POD contract as the base, and exactly one candy on top of it.
+        #
+        # `base: pod-cdi.pod-cdi` is the point of the change, not a convenience. A pod does not own
+        # its GPU driver: the kernel module is host-global, so the driver user-space arrives per
+        # container from the NVIDIA container toolkit's CDI spec. An image that bakes its own
+        # user-space SHADOWS the injected one — `nvidia-smi` then dies with "Driver/library version
+        # mismatch" and anything that sizes memory through NVML silently degrades (measured:
+        # opencharly/layer-cuda#21) — which is exactly what the previous `base: cachyos.cachyos` plus
+        # the VM-contract GPU stack did, on an image deployed as a pod. `opencharly/pod-cdi` is the
+        # repo that holds the other side of that contract: nothing nvidia-baked, the driver injected,
+        # and build-time steps that FAIL if a host-coupled driver library survives.
+        #
+        # The namespace import below (`import:` in the root charly.yml) is what makes the qualified
+        # ref resolvable; it is pinned to a MERGED tag, and its own `require:` is the one that decides
+        # which `layer-cuda` release the toolkit strip comes from. This repo declares no GPU pin of
+        # its own, so the two can never disagree about the contract.
         enabled: true
-        # LOCKED by the operator (ledger D1, 2026-10-16): the CachyOS family. Arch `extra` carries
-        # cuda 13.4.3, nvidia-container-toolkit 1.20.1 and nvidia-utils 615.78.08, so the base
-        # satisfies both Strata's CUDA 13 floor and its driver >= 580 requirement. Upstream's own
-        # container work is Ubuntu-based; that path is deliberately not pursued.
-        base: cachyos.cachyos
-        # NOTE — why there is no CUDA-arch narrowing here. The candy defaults to the fat
-        # "75;80;86;89;120" so any card works, and a narrower list would build far faster. It is
-        # NOT expressible from an image: #Box has no `var:`, and a box-level `env:` is emitted only
-        # as the `ai.opencharly.env` LABEL, while the bake reads the ENV the CANDY's `var:` emits.
-        # Measured by generating this image: the Containerfile carries
-        #     ENV STRATA_CUDA_ARCHS="75;80;86;89;120"        (the candy's default)
-        #     LABEL ai.opencharly.env='{"STRATA_CUDA_ARCHS":"89"}'   (this file's override)
-        # so the default is what ships. Recorded as a capability gap; until it is closed the engine
-        # is the fat multi-arch build. A single-card image today means copying the candy, which
-        # would violate R2, so it is deliberately not done.
+        base: pod-cdi.pod-cdi
+        # NOTE — the build's CUDA architectures are upstream's released fat package
+        # (sm_75/sm_86/sm_89/sm_120 + compute_120) because the engine is now DOWNLOADED rather than
+        # compiled: there is no per-image arch narrowing to ask for, and no nvcc in the build. The
+        # component's own resolver picks the code path for the card at start time.
         candy:
-            # The local candy by name; its `require:` pulls the rest of the stack.
+            # The local candy by name; its `require:` pulls the POD GPU contract and supervisord.
             - strata
+        security:
+            # The workload never needs to escalate: it runs as uid 1000 under supervisord and the GPU
+            # arrives as a CDI device, not as a privilege. Measured on this image with the CDI device
+            # and a bind volume, under `--userns=host --user 0 --cap-drop ALL
+            # --security-opt no-new-privileges`, the whole chain runs — supervisord, `strata` RUNNING,
+            # `Engine 0.1.62 (cuda) is installed`, `components engine` `usable: true, signed: true`, the
+            # bind writable and host files owned by 1000 — while `podman info` reports `rootless=true`.
+            # So this option makes an ALREADY-TRUE zero-escalation posture enforced instead of
+            # incidental. It unions onto the deploy's own security args (the deploy's `security_opt`
+            # is a list these are appended to), so it hardens every consumer of the image.
+            #
+            # `--userns=host` is upstream-of-us, not a choice made here: the pod deploy emits it for a
+            # unit that carries a CDI device (opencharly/plugin-deploy-pod#82), because the kernel's
+            # idmapped-mount path (`mount_setattr AT_RECURSIVE MOUNT_ATTR_IDMAP`) needs CAP_SYS_ADMIN in
+            # the user namespace that owns the filesystem's superblock, and a rootless container cannot
+            # idmap HOST files. Under `userns=host`, container uid 0 IS the invoking host user, so
+            # `User=0:0` in the unit is the same person, not a root escalation.
+            #
+            # `cap_drop` is not expressible in this schema; filed as a schema gap rather than worked
+            # around (see the PR body's `## Filed issues`).
+            security_opt:
+                - no-new-privileges
 
 strata-skill:
     skill:
