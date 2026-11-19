@@ -24,7 +24,7 @@ defaults:
         - pac
 import:
     # The POD GPU contract, imported as a namespace so the image can say `base: pod-cdi.pod-cdi`.
-    # This is the change of the v0.2.16 cutover (ledger D-2): the family used to import the CachyOS
+    # This is the change of the v0.2.16 cutover (ledger `P4`): the family used to import the CachyOS
     # distro family and base on `cachyos.cachyos` — a VM-contract GPU base whose driver user-space is
     # baked into the image, on an image that is deployed as a POD. `pod-cdi` holds the other side:
     # nothing nvidia-baked, the driver injected through CDI per container.

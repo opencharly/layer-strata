@@ -2,7 +2,7 @@ strata:
     candy:
         # Strata — the Qwen3.8-Flash-Next inference engine, as a rootless OpenCharly LAYER.
         #
-        # The layer's one job is unchanged from ledger D6: the engine is IN THE IMAGE, so a fresh
+        # The layer's one job is unchanged from ledger `P1`: the engine is IN THE IMAGE, so a fresh
         # volume's first start never compiles it. What changed at upstream v0.2.16 is HOW it gets
         # there. Upstream now PUBLISHES the compiled artifacts — the Terminal (a bundled CPython +
         # the `strata` CLI, one archive) and a signed, self-contained engine COMPONENT (CUDA 13,
@@ -20,7 +20,7 @@ strata:
         #     container. This candy therefore requires `layer-cdi` (the POD contract, whose own plan
         #     steps FAIL the build if any host-coupled driver library is baked) and nothing of the
         #     VM stack — the image is a POD-contract image by itself, and a plain-cachyos base plus
-        #     this candy is a valid GPU pod (ledger D-2). `layer-cuda` arrives transitively through
+        #     this candy is a valid GPU pod (ledger `P4`). `layer-cuda` arrives transitively through
         #     `layer-cdi`'s own `require:`; naming it here too would pin the same candy twice in one
         #     scope, which is a hard refusal.
         #   - **The runtime is upstream's entrypoint, not charly's scripts.** `charly-entrypoint.sh`,
@@ -82,7 +82,7 @@ strata:
             # back into every pod that composes this candy (opencharly/layer-cdi#9).
             - '@github.com/opencharly/layer-cdi:v2026.323.1259'
         var:
-            # ---- the release coordinates (ledger D-3) ----
+            # ---- the release coordinates (ledger `P1`) ----
             # A release TAG, never `main`: the release assets below are attached to it, and
             # `tools/docker/` is fetched from it. The repo's history was rewritten upstream, so a
             # `main` URL would also poison the download verb's content-addressed cache.
@@ -132,7 +132,7 @@ strata:
             # NVIDIA_VISIBLE_DEVICES / NVIDIA_DRIVER_CAPABILITIES are deliberately NOT set: they are
             # read by the nvidia-container-runtime hook under `docker --gpus`, and this family's GPU
             # arrives through CDI (`--device nvidia.com/gpu=all`), which reads the spec instead.
-            # ---- the deployment's settings: upstream's own names, renamed by nothing (ledger D-5) ----
+            # ---- the deployment's settings: upstream's own names, renamed by nothing (ledger `P6`) ----
             # Each of these is a documented default a deployment's `env:` overrides; the value flows
             # through the engine's own variable of the same name, because the entrypoint turns it
             # into the corresponding `strata launch` flag.
@@ -198,13 +198,13 @@ strata:
         port:
             - 8080
         volume:
-            # A NAMED volume only — a candy can never pin a host path (ledger D15/D16): the deploy
+            # A NAMED volume only — a candy can never pin a host path (ledger `P8`, the rootless XDG postures): the deploy
             # binds it (`{name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}`)
             # or `charly config strata --bind strata-data` does.
             - name: strata-data
               path: /data
         secret_require:
-            # Upstream's OWN name (ledger D-6/P7), and it is REQUIRED rather than accepted, because
+            # Upstream's OWN name (ledger `P7`), and it is REQUIRED rather than accepted, because
             # that is the contract upstream actually implements: the entrypoint hardcodes `--access
             # lan`, Strata refuses to serve beyond loopback without a key, and when nothing is passed
             # it MINTS one into the volume. "A key is always on" is therefore not a deployment's
@@ -232,7 +232,7 @@ strata:
               # Upstream's own container entrypoint, installed from the pinned tag below. It turns the
               # env above into `strata launch --no-tui --access lan …`, runs the migration of an
               # older-layout volume, keeps the server up and drains it on SIGTERM. There is no
-              # charly-owned entrypoint any more (ledger D-4).
+              # charly-owned entrypoint any more (ledger `P3`).
               exec: /opt/strata/entrypoint.sh run
               # Upstream asks for two minutes: a stop drains the queues, unloads the model and
               # releases the page-locked RAM, and a too-early SIGKILL leaves stale VRAM behind.
@@ -382,7 +382,7 @@ strata:
             # probes.
             #
             # It is deliberately NOT a runtime component: it never starts, configures or supervises
-            # anything (that is upstream's entrypoint, ledger D-4), and the only state it reads is the
+            # anything (that is upstream's entrypoint, ledger `P3`), and the only state it reads is the
             # key upstream writes to /data/state/api-key from `strata launch --show-key`. Installing it
             # with `write:` also keeps the probe bodies out of a folded YAML scalar, where a stray line
             # break inside a `python -c` program is a syntax error nobody sees until the gate runs.
