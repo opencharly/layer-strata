@@ -358,7 +358,9 @@ strata:
                 printf '%s  %s\n' "${STRATA_ENTRYPOINT_SHA256}"  /opt/strata/entrypoint.sh   | sha256sum -c -
                 printf '%s  %s\n' "${STRATA_HEALTHCHECK_SHA256}" /opt/strata/healthcheck.sh  | sha256sum -c -
                 printf '%s  %s\n' "${STRATA_WRAPPER_SHA256}"     /usr/local/bin/strata      | sha256sum -c -
-                # The image runs as uid 1000, which owns nothing under /opt (the tree was unpacked as
+                # The runtime is uid 1000 in the image (and container uid 0 on a POD deploy, where
+                # `userns=host` maps root to the invoking host user); either way it owns nothing under
+                # /opt (the tree was unpacked as
                 # root), and NOTHING inside it needs to be written: the Terminal's CPython compiles
                 # nothing at run time (the release archive already carries its `.pyc` files) and every
                 # writable path — presets, run settings, the model, the packs, the key — lives in /data.

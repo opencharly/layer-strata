@@ -3,14 +3,21 @@
 Strata — run **Qwen3.8-Flash-Next**, a 125B-parameter MoE, on one consumer NVIDIA card plus system
 RAM, and talk to it over an OpenAI-, Anthropic- or Responses-compatible API on port 8080.
 
-This repo is the charly layer for it: the candy (`candy/strata`), the image (`box/strata`) and the
-bed. It installs upstream's **published** release artifacts — the Terminal and a signed engine
-component — so nothing is compiled, the image needs no CUDA toolkit, and the GPU driver arrives from
-the host through CDI. It runs **rootless** and keeps the model weights on your own disk.
+This repo is the charly **layer** for it — the candy (`candy/strata`) and the skill beside it. It
+installs upstream's **published** release artifacts — the Terminal and a signed engine component — so
+nothing is compiled, the image needs no CUDA toolkit, and the GPU driver arrives from the host through
+CDI. It runs **rootless** and keeps the model weights on your own disk.
+
+**The image and the disposable GPU bed are `opencharly/pod-strata`** (`box/strata` there, `base:
+pod-cdi.pod-cdi`), which is where you build, deploy and verify it: opencharly/opencharly#1174 is the
+cutover that split them, and its decision record is
+[`plan/strata-pod-and-engine-v0216-ledger.md`](https://github.com/opencharly/opencharly/blob/main/plan/strata-pod-and-engine-v0216-ledger.md).
+This repo is the producer that pod pins by tag.
 
 ## Quick start
 
 ```sh
+git clone https://github.com/opencharly/pod-strata && cd pod-strata   # the image lives there
 charly box build strata                            # installs two release archives; no compiler, no GPU needed to build
 mkdir -p ~/.local/share/strata                    # the model store: rootless, XDG
 charly config strata --bind strata-data=~/.local/share/strata   # record that host path for THIS machine
@@ -167,10 +174,12 @@ at files you already have), makes the pack, and loads it. Later starts load from
 - `charly check live strata` — `/health` 200 (pre-auth by design), the component `usable`/`signed`
   against the card CDI injected, the projection well formed, the `/v1` gate matching the
   deployment's key posture, and a completion round-tripping with `reasoning_effort: none`.
-- `charly check run strata.check-strata-gpu-pod` — the family's ONLY bed: the real engine, a
+- `charly check run strata.check-strata-gpu-pod` — the family's ONLY bed, run from
+  `opencharly/pod-strata`: the real engine, a
   provisioned store, the projection the deployment asked for, `images: true` by the candy's own
   DEFAULT, one real PNG round-trip whose answer names the colour, and `strata --version` reporting
-  the pinned build as uid 1000. It needs the GPU venue and the staged shards, so it is run on
+  the pinned build as the mapped runtime user (container uid 0: under `userns=host` the container's
+  root IS the invoking host user). It needs the GPU venue and the staged shards, so it is run on
   demand and excluded from the default roster.
 - `charly strata version|status|models|props|config|metrics` — the host-side management CLI (the
   out-of-tree `opencharly/plugin-strata` command plugin), speaking the same HTTP API.
