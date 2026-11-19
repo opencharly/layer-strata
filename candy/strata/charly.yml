@@ -28,7 +28,7 @@ strata:
         #     `charly-build-engine.py` are DELETED: config presets, `STRATA_SET`, the vision pass,
         #     the `/data/Strata-data` layout and the API-key rule are upstream's product, and the
         #     second implementation charly carried was the part that kept failing silently (ledger
-        #     D-4).
+        #     `P3`).
         description: |
             Strata — the Qwen3.8-Flash-Next inference engine (125B MoE) serving an OpenAI-,
             Anthropic- and Responses-compatible API on port 8080, installed from upstream's

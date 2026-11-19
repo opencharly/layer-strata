@@ -41,7 +41,7 @@ from the pinned `v0.2.16` release, `sha256`-pinned, into `/opt/strata/terminal` 
 `tools/docker/Dockerfile` builds.
 
 **Why.** "The engine is in the image, so the first start never compiles it" was always the
-layer's job (old ledger D6). Upstream now publishes the compile's OUTPUT, and its own container
+layer's job (the bake decision in the family's old `plan/strata-layer-and-pod.md`, its `D6`). Upstream now publishes the compile's OUTPUT, and its own container
 image installs those two archives; baking them serves the same decision without a 18–25 minute
 compile, without `nvcc`, and without the stamp-that-can-lie failure mode (upstream #2054) that the
 old bake needed two probes to police.

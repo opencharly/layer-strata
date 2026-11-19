@@ -1,7 +1,7 @@
 strata:
     candy:
         # The Strata family's image, and — as of the v0.2.16 cutover — the FINAL composition (ledger
-        # D-2): the POD contract as the base, and exactly one candy on top of it.
+        # `P4`): the POD contract as the base, and exactly one candy on top of it.
         #
         # `base: pod-cdi.pod-cdi` is the point of the change, not a convenience. A pod does not own
         # its GPU driver: the kernel module is host-global, so the driver user-space arrives per
