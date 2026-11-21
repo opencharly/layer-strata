@@ -180,8 +180,37 @@ strata:
             # The preset a start saves its settings into (upstream's default name for a container).
             PRESET: docker
             # Advanced engine settings, space separated KEY=VALUE, like `strata launch --set`.
-            # Empty means none. This is the engine's own escape hatch, not a charly surface.
+            # Empty means none. This is the engine's own escape hatch, not a charly surface, and
+            # the split matters: `--set` reaches the ENGINE's argv, not the launcher's flags. A
+            # launcher-only switch written here (`no-api-key`, `access`, …) is forwarded to the
+            # engine, which answers `unknown argument` and exits — and the launcher then persists it
+            # into the preset, so every later start fails the same way
+            # (opencharly/layer-strata#27). The launcher's own switches are the STRATA_* entries
+            # below once they land; until then this stays engine-only.
             STRATA_SET: ""
+            # ---- the rest of upstream's entrypoint surface, declared rather than implicit ----
+            # The entrypoint reads these too; an undeclared variable is a setting an operator
+            # cannot discover from this file. Each default is upstream's own, written as "" so the
+            # entrypoint's `${VAR:-default}` keeps it. (GGUF_DIR and API_KEY_FILE are deliberately
+            # absent: the first is the retired alias of MODEL_PATH, the second is replaced by the
+            # `API_KEY` secret charly injects — a surface with two names for one thing is the legacy
+            # the cutover deleted.)
+            # 0 (default): a start REFUSES when model files sit in the older `/data/models` layout
+            # instead of downloading tens of GB again; `1` goes on with a warning.
+            ALLOW_DOWNLOAD: ""
+            # Only meaningful with TUNE: `1` tunes again even when this model was already tuned here.
+            RETUNE: ""
+            # Only meaningful with TUNE: allow tuning a model too small to be worth it.
+            TUNE_ALLOW_SMALL: ""
+            # Where the entrypoint reads the CPU flags for its AVX2 warning (default /proc/cpuinfo).
+            STRATA_CPUINFO: ""
+            # The device directory the entrypoint probes for the card (default /dev).
+            STRATA_DEV_DIR: ""
+            # The key file the entrypoint reads when no API_KEY is handed in
+            # (default /data/state/api-key).
+            STRATA_KEY_FILE: ""
+            # The older (0.1.x) model directory the migration guard looks for (default /data/models).
+            STRATA_LEGACY_MODELS: ""
             # Image-wide on purpose: the pod publishes the port, so the server listens on every
             # address inside the container and the key is what protects it.
             PORT: "8080"
