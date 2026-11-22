@@ -25,7 +25,7 @@ of the layer's job is unchanged; only the mechanism moved.
 |---|---|
 | the POD GPU contract (`layer-cdi`, or an image that composes it) | the engine loads `libcuda`, which the runtime injects per container; the toolkit must NOT be baked (it shadows the host's NVML) |
 | a **writable** `/data` | presets, run settings, the prepared pack, the encoder file and the API key all live there |
-| the required `API_KEY` secret (the candy's `secret_require:`) | upstream refuses to serve beyond loopback without a key. **A deploy of this image is not instantiable until `charly config` has run once**, because that is what mints `charly/secret/API_KEY` and writes `Secret=…,type=env,target=API_KEY` into the unit; a deployment configured some other way must supply `API_KEY` itself. Upstream mints its own key only when it is handed nothing |
+| the `API_KEY` secret ONLY when the deployment wants a key | keyless is a supported posture: the candy declares `secret_accept`, so with nothing stored nothing is injected, and `STRATA_NO_API_KEY: "1"` makes the launcher serve without one. With that empty, upstream mints a key into the volume. A key handed in always wins |
 | a **bind** for the model store | `{name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}` — rootless, XDG; a candy can never pin a host path |
 
 ## The configuration surface — upstream's own names, renamed by nothing
@@ -33,7 +33,10 @@ of the layer's job is unchanged; only the mechanism moved.
 Everything is the deployment's `env:`; the candy's `env:` carries the documented defaults.
 `MODEL`, `FAMILY`, `MODEL_PATH`, `CONTEXT`, `PARALLEL`, `VISION`, `KV`, `DRAFTING`,
 `DRAFT_VOCAB`, `GPU`/`GPUS`, `GPU_ROLES`, `TUNE`, `PRESET`, `STRATA_SET`, `PORT`, and `API_KEY`
-as the secret. The entrypoint turns each into the corresponding `strata launch` flag.
+as the secret. The entrypoint turns each into the corresponding `strata launch` flag. The
+launcher's OWN switches are the two charly names `STRATA_ACCESS` and `STRATA_NO_API_KEY`, because
+upstream's entrypoint hardcodes them and has no variable for either; the build maps them onto the
+entrypoint's own lines (ledger `P10`).
 
 **Ignored upstream, therefore deleted here.** `HOST`, `LOW_RAM`, `REINSTALL`,
 `RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `LAYER_SPLIT` and `CONFIG` are from the older image:
@@ -71,7 +74,9 @@ At **build** (no card needed, and proven so):
   `signed: true`, `version 0.1.62`, `backend cuda`, `variant cuda13`. The signature is never
   re-implemented here;
 - the encoder binary ships inside the component (`strata-vision-binary`), and upstream's three
-  container scripts are installed and executable (`strata-container-scripts`).
+  container scripts are installed and executable AND the entrypoint carries the two
+  launcher-switch mappings (`strata-container-scripts`, ledger `P10` — a build that lost the patch
+  still starts, so the ARTIFACT, not the build log, is the witness).
 
 `strata-engine-component` runs with **`STRATA_ENGINE_BACKEND=cuda`** — upstream's own environment
 override, which its docstring says the tests and the support desk use. That is deliberate and it
@@ -109,13 +114,13 @@ a build context must be able to do — build without a card.
 - **`MODEL_PATH` must name the folder that holds the shards**, not a parent: the entrypoint
   refuses a folder with no `.gguf` in it and says which sub-folder to name, rather than
   downloading tens of GB. A folder that is not in the container at all stops the start at once.
-- **A key is always on, and it is REQUIRED.** The candy declares `secret_require: [{name:
-  API_KEY}]`, so `charly config` mints a value for it and the unit carries
-  `Secret=…,type=env,target=API_KEY`. A `secret_accept` would document a keyless posture that
-  cannot exist — and, measured, an accepted name with no stored value injects NOTHING at all.
-  Upstream still mints its own key when it is handed none, keeps it in `/data/state/api-key`
-  (`strata launch --show-key --preset docker`), and warns when a key is shorter than 16
-  characters.
+- **The key is a POSTURE.** The candy declares `secret_accept: [{name: API_KEY}]`, so with nothing
+  stored nothing is injected — that is the keyless state, and `STRATA_NO_API_KEY: "1"` passes the
+  launcher's `--no-api-key` (upstream warns that anyone who can reach the port may use the model;
+  nothing is refused). With it empty, upstream mints a key into `/data/state/api-key`
+  (`strata launch --show-key --preset docker`). A key handed in ALWAYS wins over the flag. The two
+  launcher switches upstream's entrypoint hardcodes are mapped at build (ledger `P10`), and that
+  build step FAILS if upstream moves the lines it replaces.
 - **The container needs read+execute on `/opt/strata`** for the runtime uid, which owns nothing
 there — uid 1000 in the image, and container uid **0** on a POD deploy, where `userns=host` maps the
 container's root to the invoking host user (the only mapping that keeps a host-owned bind writable
