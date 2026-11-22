@@ -206,7 +206,11 @@ nowhere in this repo.
 **Invalidated by.** Upstream adding a name (then the candy may adopt it) or re-reading a retired
 one.
 
-## P7 — The secret is `API_KEY`, and it is REQUIRED, not accepted
+## P7 — The secret is `API_KEY` (SUPERSEDED IN PART by `P10`)
+
+**Superseded in part by `P10`.** The NAME (`API_KEY`) and the entrypoint's key handoff still
+stand; the REQUIRED form does not. The measured fact below — that an accepted name with no stored
+value injects nothing at all — is now the keyless state a deployment can ask for, not a trap.
 
 **Decision.** `secret_require: [{name: API_KEY}]` — upstream's own name, and the required form.
 
@@ -255,13 +259,6 @@ the same sentence, because it is the one thing a consumer has to DO.
 **Invalidated by.** Upstream serving unauthenticated beyond loopback, renaming the variable, or
 charly changing which declarations get minted.
 
-**Control.** `strata-api-gate` is posture-BRANCHED rather than fixed: with a key in force
-`/v1/models` must answer 401 without it and 200 with it, and with no key it must answer 200 —
-a fixed either-way assertion would be red on one of the two legal deployments, or blind to the
-other.
-
-**Invalidated by.** Upstream serving unauthenticated beyond loopback, or renaming the variable.
-
 ## P8 — The two standing postures, now enforced by other means
 
 **Rootless.** No privileged container, no root-owned host path, no `sudo`; the GPU arrives as a CDI
@@ -302,6 +299,49 @@ context; `strata launch --help` documents the choice; the entrypoint deletes
 differs from the engine's own 32768 recommendation for that card, so the assertion can fail.
 
 **Invalidated by.** The launcher clamping a requested context, or moving the run settings.
+
+## P10 — The key is a POSTURE, and the two launcher switches the entrypoint hardcodes are mapped at build
+
+**Decision.** `secret_require: [{name: API_KEY}]` becomes `secret_accept`, and two candy envs —
+`STRATA_ACCESS` (`lan|local`, default `lan`) and `STRATA_NO_API_KEY` (`1` = keyless, empty =
+upstream's own rule) — are mapped onto the launcher's own flags by a small patch applied at build
+to upstream's entrypoint (`map the launcher switches upstream's entrypoint hardcodes`).
+
+**Why.** opencharly/layer-strata#27: `strata launch` accepts `--access` and `--no-api-key`, and its
+own help says `--no-api-key` shares beyond this computer "a warning is shown, nothing is refused".
+Upstream's entrypoint, however, passes `--access lan` as a literal, has no variable for either flag,
+and appends `--api-key-env` whenever a key exists — so with the required secret there was no
+container-side expression for keyless at all, and the nearest knob (`STRATA_SET`) fed the ENGINE,
+which crashed on the flag and had it persisted into the preset. A second entrypoint (a charly launch
+renderer) would duplicate upstream's whole env→flag mapping, which `P3` deleted and R2 forbids. The
+smallest R2-conformant fix is therefore upstream's own entrypoint, verbatim, with exactly the two
+missing switches added — not a wrapper, and not a re-implementation of any setting.
+
+**Evidence.** The pinned v0.2.16 entrypoint: `set -- launch --no-tui --access lan --port "$PORT"
+--data-dir /data/Strata-data` and `[ -n "$key" ] && { set -- "$@" --api-key-env STRATA_LAUNCH_KEY; }`.
+The launcher: `--no-api-key` sets `s.api_key, s.no_key = None, True` and drops a key a preset had
+(`terminal/strata_cli/launch/cmd.py:294-298`); with no key and `no_key` it mints nothing
+(`cmd.py:399`); `check_access` returns a WARN for `lan` without a key and refuses nothing
+(`launch/settings.py:217-225`). The patch was run against the pinned file on 2026-11-22: it applies
+exactly once, `sh -n` parses the result, and a second application exits non-zero naming the line it
+can no longer find.
+
+**Control.** The build step fails when either upstream line is not present exactly ONCE, so an
+upstream repin that moves them turns into a red build that names this decision instead of silently
+restoring the hardcoded posture. The `strata-container-scripts` check asserts the two mappings in
+the BUILT artifact (a lost patch still starts, so the artifact — not the build log — is the
+witness). `strata-api-gate` stays posture-branched, so a keyless bed arm (no key, `/v1/models` 200)
+and a keyed arm are both provable.
+
+**Consequences.** A key handed in ALWAYS wins: the patch only passes `--no-api-key` when no key was
+given, so a deployment holding a key cannot accidentally serve keyless. `STRATA_ACCESS: local` is
+loopback-only INSIDE the container and unreachable from another pod, so a deployment other
+containers call keeps `lan`. Keyless beside `lan` is upstream's own warned posture: anyone who can
+reach the port may use the model.
+
+**Invalidated by.** Upstream exposing either switch as an environment variable — then DELETE the
+patch step and the `strata-container-scripts` assertion with it, in the same cutover — or moving the
+entrypoint out of `tools/docker/`.
 
 ---
 

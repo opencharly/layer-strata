@@ -61,14 +61,18 @@ before probing a deployed gateway; it is not this repo's file.
   model data) is fetched once into the store and reused.
 - **The configuration is the deployment's `env:`**, under upstream's OWN names — `MODEL`, `FAMILY`,
   `MODEL_PATH`, `CONTEXT`, `PARALLEL`, `VISION`, `KV`, `DRAFTING`, `DRAFT_VOCAB`, `GPU`/`GPUS`,
-  `GPU_ROLES`, `TUNE`, `PRESET`, `STRATA_SET`, `PORT`, plus `API_KEY` as a REQUIRED secret (`secret_require`, so `charly config` mints it — an accepted name with no stored value injects nothing at all). The names the
+  `GPU_ROLES`, `TUNE`, `PRESET`, `STRATA_SET`, `PORT` — plus the launcher's own switches,
+  `STRATA_ACCESS` (`lan|local`) and `STRATA_NO_API_KEY` (`1` = keyless), which upstream's entrypoint
+  hardcodes and the build patch maps (ledger `P10`), and `API_KEY` as an ACCEPTED secret
+  (`secret_accept`: with none stored, nothing is injected; a keyless deployment asks for it with
+  `STRATA_NO_API_KEY=1`, otherwise upstream mints one). The names the
   v0.2.16 entrypoint WARNS about and ignores (`HOST`, `LOW_RAM`, `REINSTALL`,
   `RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `LAYER_SPLIT`, `CONFIG`) must never come back, and
   `GGUF_DIR` is not emitted (it is upstream's alias of `MODEL_PATH`).
 - **Rootless discipline**: no privileged container, no root-owned host path, no `sudo`. The layer
   grants `a+rX` on `/opt/strata` rather than a `chown`, because nothing in that tree is written at
   run time and a `chown` would hardcode a uid that `user_policy` can move.
-- **`LEDGER.md` is this repo's decision record** (`P1`–`P9`, plus the retired `V*` entries and why
+- **`LEDGER.md` is this repo's decision record** (`P1`–`P10`, plus the retired `V*` entries and why
   each cannot stand). Read it before changing the artifact source, the entrypoint, the GPU contract,
   the vision default or the context default.
 - **Every probe lives in this candy**, so the bed in `pod-strata` declares almost no plan of its own (R3): six

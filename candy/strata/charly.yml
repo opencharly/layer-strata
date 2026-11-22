@@ -58,14 +58,16 @@ strata:
               `$XDG_*` (see opencharly/spec#260).
             - **The whole configuration is the deployment's `env:`**, under upstream's OWN names:
               MODEL, FAMILY, MODEL_PATH, CONTEXT, PARALLEL, VISION, KV, DRAFTING, DRAFT_VOCAB,
-              GPU/GPUS, GPU_ROLES, TUNE, PRESET, STRATA_SET, PORT — with `API_KEY` as the secret.
+              GPU/GPUS, GPU_ROLES, TUNE, PRESET, STRATA_SET, PORT — plus the launcher's two
+              switches, STRATA_ACCESS and STRATA_NO_API_KEY, and `API_KEY` as an optional secret.
               The candy's `env:` carries the documented defaults and upstream's container contract
               (component/install/state/config/home inside `/data`); nothing is renamed.
 
-            It runs **rootless**: no privileged container, no root-owned host path. Upstream refuses
-            to serve beyond loopback without a key (`--access lan`), so a key is always on — the
-            deployment's `API_KEY`, or one upstream mints into the volume on the first start.
-            `/health` is answered before the key gate, so a liveness probe needs no secret.
+            It runs **rootless**: no privileged container, no root-owned host path. The KEY is a
+            posture: keyless (`STRATA_NO_API_KEY=1`) is supported beside upstream's own `--access
+            lan`, and with the flag empty the deployment's `API_KEY` is used or upstream mints one
+            into the volume on the first start (ledger `P10`). `/health` is answered before the key
+            gate, so a liveness probe needs no secret.
 
             The weights are NOT in this image and no first start is triggered by building it.
         require:
@@ -185,9 +187,29 @@ strata:
             # launcher-only switch written here (`no-api-key`, `access`, …) is forwarded to the
             # engine, which answers `unknown argument` and exits — and the launcher then persists it
             # into the preset, so every later start fails the same way
-            # (opencharly/layer-strata#27). The launcher's own switches are the STRATA_* entries
-            # below once they land; until then this stays engine-only.
+            # (opencharly/layer-strata#27). The launcher's own switches have names of their own
+            # below, mapped onto its flags by the build patch (ledger `P10`).
             STRATA_SET: ""
+            # ---- the launcher's own switches, which upstream's entrypoint HARDCODES ----
+            # `--access` and `--no-api-key` belong to `strata launch`, not the engine, so
+            # `STRATA_SET` can never carry them (above). Upstream's entrypoint passes `--access lan`
+            # as a literal and has no variable for either flag; the build step
+            # "map the launcher switches upstream's entrypoint hardcodes" applies a two-line patch
+            # that reads these two names instead, and FAILS THE BUILD if the upstream lines it
+            # replaces are no longer exactly where it expects them (ledger `P10`).
+            #
+            # Who may use the server. `lan` is upstream's own posture: the pod publishes the port,
+            # so the server listens on every address inside the container. `local` is
+            # loopback-only INSIDE the container, which NO other pod can reach — a deployment that
+            # other containers call must keep `lan`.
+            STRATA_ACCESS: lan
+            # Serve WITHOUT an API key. `1` is keyless: Strata's launcher accepts it beside
+            # `--access lan` with a warning and refuses nothing, so anyone who can reach the port
+            # may use the model (upstream's own warning, not a charly one). Empty is the entrypoint's
+            # own rule — a key handed in is used, and one is minted when none is (ledger `P7`).
+            # A key handed in ALWAYS wins: the patch only passes `--no-api-key` when no key was
+            # given, so a deployment holding a key cannot accidentally serve keyless.
+            STRATA_NO_API_KEY: ""
             # ---- the rest of upstream's entrypoint surface, declared rather than implicit ----
             # The entrypoint reads these too; an undeclared variable is a setting an operator
             # cannot discover from this file. Each default is upstream's own, written as "" so the
@@ -232,36 +254,37 @@ strata:
             # or `charly config strata --bind strata-data` does.
             - name: strata-data
               path: /data
-        secret_require:
-            # Upstream's OWN name (ledger `P7`), and it is REQUIRED rather than accepted, because
-            # that is the contract upstream actually implements: the entrypoint hardcodes `--access
-            # lan`, Strata refuses to serve beyond loopback without a key, and when nothing is passed
-            # it MINTS one into the volume. "A key is always on" is therefore not a deployment's
-            # choice — so a `secret_accept` here would describe a keyless posture that cannot exist,
-            # and (measured) an accepted name with no value in the credential store injects NOTHING at
-            # all: no podman secret, no environment variable, and no warning. A required name is what
-            # makes charly mint a value (`charly secrets list` then carries it) and hand it to the
-            # container as `Secret=<name>,type=env,target=API_KEY`.
+        secret_accept:
+            # Upstream's OWN name (ledger `P7`), ACCEPTED rather than required: the key is a
+            # posture, and a keyless deployment is a supported one (`STRATA_NO_API_KEY` above).
+            # Measured: an accepted name with no value in the credential store injects NOTHING —
+            # no podman secret, no environment variable, no warning — which is exactly the keyless
+            # state. With no key handed in, the entrypoint passes `--no-api-key` when the deployment
+            # asks for it, and otherwise lets the launcher mint one into the volume (upstream's own
+            # posture).
             #
-            # A deployment that wants its own key stores it first:
+            # A deployment that wants a key stores it first:
             #     charly secrets set charly/secret/API_KEY "$(openssl rand -hex 24)"
-            # With none stored, `charly config` mints a 32-byte token — which is exactly upstream's own
-            # posture, one layer earlier, and it means the key the server uses is never a blank.
+            # `charly config` then hands it to the container as
+            # `Secret=<name>,type=env,target=API_KEY`, and the key always wins over
+            # `STRATA_NO_API_KEY`.
             - name: API_KEY
               description: >-
-                  Bearer / x-api-key token for every /v1/* request. Minted by charly on `charly config`
-                  when none is stored, and passed to the engine as API_KEY; upstream mints its own only
-                  when handed nothing. /health stays pre-auth either way.
+                  Bearer / x-api-key token for every /v1/* request. Optional: with none stored the
+                  container serves keyless only when the deployment sets `STRATA_NO_API_KEY=1`, and
+                  otherwise upstream mints and keeps its own key in the volume. /health stays
+                  pre-auth either way.
         env_provide:
             # Product-scoped only. A generic OPENAI_BASE_URL would silently redirect every
             # OpenAI-speaking service in the same pod, so consumers opt in with env_accept.
             STRATA_BASE_URL: "http://{{.ContainerName}}:8080/v1"
         service:
             - name: strata
-              # Upstream's own container entrypoint, installed from the pinned tag below. It turns the
-              # env above into `strata launch --no-tui --access lan …`, runs the migration of an
-              # older-layout volume, keeps the server up and drains it on SIGTERM. There is no
-              # charly-owned entrypoint any more (ledger `P3`).
+              # Upstream's own container entrypoint, installed from the pinned tag below and run
+              # VERBATIM apart from the two launcher switches mapped at build (`STRATA_ACCESS`,
+              # `STRATA_NO_API_KEY`; ledger `P10`). It turns the env above into `strata launch
+              # --no-tui --access …`, runs the migration of an older-layout volume, keeps the server
+              # up and drains it on SIGTERM. There is no charly-owned entrypoint (ledger `P3`).
               exec: /opt/strata/entrypoint.sh run
               # Upstream asks for two minutes: a stop drains the queues, unloads the model and
               # releases the page-locked RAM, and a too-early SIGKILL leaves stale VRAM behind.
@@ -405,6 +428,55 @@ strata:
                 test -x /opt/strata/terminal/bin/strata
                 test -x "/opt/strata/components/engine/${STRATA_ENGINE_COMPONENT}/strata"
                 test -x "/opt/strata/components/engine/${STRATA_ENGINE_COMPONENT}/strata-vision"
+            # ---- the launcher switches upstream's entrypoint hardcodes (ledger `P10`) ----
+            # `strata launch` accepts `--access` and `--no-api-key`; upstream's entrypoint passes
+            # `--access lan` as a LITERAL and has no variable for either flag, so a keyless posture
+            # has no container-side expression at all (opencharly/layer-strata#27). The launcher
+            # itself supports keyless beside `--access lan` (its own help: "a warning is shown,
+            # nothing is refused"), so this is the pinned entrypoint's gap, not the launcher's.
+            #
+            # The patch is EXACT-MATCH and fails the build when either upstream line is not present
+            # exactly once: an upstream release that moves them turns into a red build that names
+            # this decision, never a silent revert to a hardcoded posture. Delete this step the
+            # moment upstream exposes the switches as env (`P10`'s "Invalidated by").
+            - run: map the launcher switches upstream's entrypoint hardcodes
+              run_as: root
+              command: |
+                set -eu
+                /opt/strata/terminal/python/bin/python3 - <<'PY'
+                import sys
+
+                path = "/opt/strata/entrypoint.sh"
+                src = open(path, encoding="utf-8").read()
+                subs = [
+                    # who may use it: the launcher's own `--access`, previously a literal
+                    ('set -- launch --no-tui --access lan --port "$PORT" --data-dir /data/Strata-data',
+                     'set -- launch --no-tui --access "${STRATA_ACCESS:-lan}" --port "$PORT" --data-dir /data/Strata-data'),
+                    # whether the launcher mints/holds a key: only when none was handed in, so a
+                    # deployment that supplies `API_KEY` always keeps it
+                    ('[ -n "$key" ] && { set -- "$@" --api-key-env STRATA_LAUNCH_KEY; }',
+                     '[ -z "$key" ] && [ "${STRATA_NO_API_KEY:-0}" = "1" ] && set -- "$@" --no-api-key\n'
+                     '[ -n "$key" ] && { set -- "$@" --api-key-env STRATA_LAUNCH_KEY; }'),
+                    # the closing warning is only true when the launcher actually minted a key
+                    ('if [ -z "$key" ]; then\n  warn "No API_KEY was set, so Strata made one',
+                     'if [ -z "$key" ] && [ "${STRATA_NO_API_KEY:-0}" != "1" ]; then\n  warn "No API_KEY was set, so Strata made one'),
+                ]
+                for old, new in subs:
+                    n = src.count(old)
+                    if n != 1:
+                        sys.exit("P10: upstream's entrypoint carries %d matching line(s) for %r, expected exactly 1 — "
+                                 "the launcher-switch patch no longer applies (opencharly/layer-strata#27)" % (n, old))
+                    src = src.replace(old, new)
+                open(path, "w", encoding="utf-8").write(src)
+
+                patched = open(path, encoding="utf-8").read()
+                for needle in ('--access "${STRATA_ACCESS:-lan}"',
+                               '[ "${STRATA_NO_API_KEY:-0}" = "1" ] && set -- "$@" --no-api-key',
+                               '[ "${STRATA_NO_API_KEY:-0}" != "1" ]; then'):
+                    if needle not in patched:
+                        sys.exit("P10: the patched entrypoint does not carry %r after the patch" % needle)
+                print("P10: the entrypoint maps STRATA_ACCESS and STRATA_NO_API_KEY; everything else is upstream's")
+                PY
             # ---- the probe helper: ONE implementation of "ask the running server" ----
             # Every runtime assertion below, and the bed's own, ask the same three questions (is the
             # projection well formed, does the key gate match this deployment, does a completion
@@ -641,20 +713,37 @@ strata:
               file:
                   file: /opt/strata/components/engine/0.1.62-linux-x86_64-cuda-cuda13/strata-vision
                   exists: true
-            - check: upstream's three container scripts are installed and executable
+            - check: upstream's three container scripts are installed and executable, with the launcher switches mapped
               id: strata-container-scripts
               exit_status: 0
               # The entrypoint is what the supervisord service runs, so its absence is not a warning:
               # it is a service that never starts. The wrapper and the healthcheck are part of the same
               # contract (`strata monitor` inside the container; the health semantics upstream ships).
               # One probe for the three, because one pinned tag installs all three.
+              #
+              # It also proves ledger `P10` LANDED in the artifact, not just that the build step ran:
+              # the entrypoint reads `STRATA_ACCESS` and can pass `--no-api-key`. A build that lost
+              # the patch would still start (with upstream's hardcoded posture), so the mapping has to
+              # be asserted here or the keyless posture would regress silently. The needles are
+              # written WITHOUT `${…}` on purpose — see the note in the body; a braced reference makes
+              # the runner skip the whole step.
               command: |
                   /opt/strata/terminal/python/bin/python3 - <<'PY'
                   import os, sys
                   paths = ["/opt/strata/entrypoint.sh", "/opt/strata/healthcheck.sh", "/usr/local/bin/strata"]
                   bad = [p for p in paths if not os.access(p, os.R_OK | os.X_OK)]
                   print("not readable+executable:", bad)
-                  sys.exit(0 if not bad else 1)
+                  entrypoint = open("/opt/strata/entrypoint.sh", encoding="utf-8").read()
+                  # The needles are the mapping's own TEXT, minus the shell's `${`. The check runner
+                  # treats `${NAME...}` in a check body as a variable reference, cannot resolve it,
+                  # and SKIPS the step: the first run of this check was skipped exactly that way
+                  # ("unresolved variables: STRATA_ACCESS:-lan, STRATA_NO_API_KEY:-0") and asserted
+                  # nothing. A needle without `${` is still the line the build patch writes.
+                  wanted = ['STRATA_ACCESS:-lan}"',
+                            'STRATA_NO_API_KEY:-0}" = "1" ] && set -- "$@" --no-api-key']
+                  missing = [w for w in wanted if w not in entrypoint]
+                  print("launcher switches not mapped (P10):", missing)
+                  sys.exit(0 if not bad and not missing else 1)
                   PY
             # ---- runtime probes: the boundary a deployment actually crosses ----
             - check: the running server answers /health, which is pre-auth by design
@@ -720,10 +809,11 @@ strata:
               context: [runtime]
               timeout: 1000s
               exit_status: 0
-              # Upstream serves nothing beyond loopback without a key, and a key is always on: the
-              # deployment's `API_KEY`, else one minted into the volume. So the honest assertion is
-              # posture-BRANCHED rather than a fixed 401 (which would be red on a keyless local pod) or
-              # a fixed 200 (which would leave a configured key unproven):
+              # The launcher refuses nothing, but by default a key is on: the deployment's `API_KEY`,
+              # else one minted into the volume. A deployment that sets `STRATA_NO_API_KEY=1` is
+              # keyless instead (ledger `P10`), and a key handed in always wins over that flag. So the
+              # honest assertion is posture-BRANCHED rather than a fixed 401 (which would be red on a
+              # keyless deployment) or a fixed 200 (which would leave a configured key unproven):
               #   key in force -> /v1/models must answer 401 without it and 200 with it
               #   no key       -> /v1/models must answer 200
               eventually: "900s"

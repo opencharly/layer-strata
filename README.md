@@ -56,7 +56,8 @@ strata:
     volume:
       - {name: strata-data, type: bind, host: ~/.local/share/strata, path: /data}
     port: [8080]
-    # No `secret:` entry: the layer declares `API_KEY` as a required secret, so charly supplies it.
+    # No `secret:` entry needed. `API_KEY` is an ACCEPTED secret: with none stored nothing is
+    # injected, and the posture is decided by `STRATA_NO_API_KEY` (see "The API key").
 ```
 
 | Variable | Default | What it does |
@@ -75,9 +76,11 @@ strata:
 | `GPU_ROLES` | none | a role per card, e.g. `1=main,0=helper` — not together with `GPU`/`GPUS` |
 | `TUNE` | `skip` | `quick`/`thorough` tune ONCE per preset (up to ~20/120 minutes on the first start) and keep the result |
 | `PRESET` | `docker` | the preset name in `/data`; the settings above are saved into it |
-| `STRATA_SET` | none | advanced engine settings, space separated `KEY=VALUE` (like `strata launch --set`) |
+| `STRATA_SET` | none | advanced engine settings, space separated `KEY=VALUE` (like `strata launch --set`); engine-only — launcher switches go below |
+| `STRATA_ACCESS` | `lan` | the launcher's own `--access`: `lan` (the pod publishes the port) or `local` (loopback INSIDE the container — no other pod can reach it) |
+| `STRATA_NO_API_KEY` | empty | `1` serves keyless; empty leaves upstream's rule (a key handed in is used, one is minted when none is). A key handed in always wins |
 | `PORT` | `8080` | the port inside the container |
-| `API_KEY` | minted | the key clients must send — see "The API key" |
+| `API_KEY` | none | optional secret: the bearer token clients must send — see "The API key" |
 
 `GET /health` and the engine's own `GET /config` are the authority for runtime behaviour; anything
 beyond this table is the engine's surface, reached through `STRATA_SET` or `strata profile` inside
@@ -138,19 +141,35 @@ Two things are worth knowing:
 
 ## The API key
 
-Upstream listens on every address **inside** the container (that is what lets the published port
-work) and refuses to serve beyond loopback without a key, so a key is always on:
+The key is a **posture**, not an invariant. Upstream listens on every address **inside** the
+container (that is what lets the published port work), and its launcher will share beyond the
+computer with or without a key — `--no-api-key` only draws a warning
+(`terminal/strata_cli/launch/cmd.py:294-298`). Upstream's container entrypoint, however, always
+passes `--access lan` and has no variable for either launcher switch, so this layer maps the two
+names (`STRATA_ACCESS`, `STRATA_NO_API_KEY`) onto them at build (ledger `P10`).
 
-- **charly sets it for you, and it must.** The layer declares `API_KEY` as a required secret, so the
-  `charly config` in the quick start is what mints a 32-byte token into the credential store and
-  writes `Secret=…,type=env,target=API_KEY` into the unit. A deployment configured some other way
-  must supply `API_KEY` itself. To choose your own key, store it first and re-configure:
-  `charly secrets set charly/secret/API_KEY "$(openssl rand -hex 24)"` then
-  `charly config strata -i <instance>`.
-- **If nothing is supplied at all**, upstream mints one on the first start, keeps it in the volume,
-  and the log says how to read it — `charly cmd strata -- strata launch --show-key --preset docker`.
+Three legal deployments:
 
-`GET /health` answers without a key; every other `/v1/*` request needs it.
+- **Keyless** — `STRATA_NO_API_KEY: "1"` and nothing stored in the credential store. Nothing is
+  injected, the launcher mints nothing, `/v1/*` answers without a token, and the log carries
+  upstream's own warning that anyone who can reach the port may use the model. This is the posture
+  for a host-local or trusted-network deployment.
+- **Upstream's own key** — `STRATA_NO_API_KEY` empty and nothing stored: the launcher **mints** one
+  into the volume on the first start and the log says how to read it —
+  `charly cmd strata -- strata launch --show-key --preset docker`.
+- **Your own key** — store it first, then configure:
+
+  ```sh
+  charly secrets set charly/secret/API_KEY "$(openssl rand -hex 24)"
+  charly config strata -i <instance>
+  ```
+
+  `charly config` then writes `Secret=…,type=env,target=API_KEY` into the unit. A key handed in
+  **always wins** over `STRATA_NO_API_KEY`, so a deployment holding a key cannot accidentally serve
+  keyless.
+
+`GET /health` answers without a key in every posture; every other `/v1/*` request needs one only
+when a key exists.
 
 ## First start — what it does to your store, once
 
