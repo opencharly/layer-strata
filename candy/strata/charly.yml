@@ -190,10 +190,14 @@ strata:
             # (opencharly/layer-strata#27). The launcher's own switches have names of their own
             # below, mapped onto its flags by the build patch (ledger `P10`).
             # The DEFAULTS ARE THE DEPLOYED POSTURE, so a fresh deploy needs no overrides:
-            # `vram-reserve-mib=0` leaves no artificial cushion free on the card (the operator's
-            # max-VRAM posture), and `idle-unload=300` releases the model after five minutes
-            # without requests and reloads it on the next one (measured: VRAM 16016 -> 262 MiB,
-            # `/health` `loaded:false`, then a 200 completion after the reload).
+            # `idle-unload=300` releases the model after five minutes without requests and reloads
+            # it on the next one (measured: VRAM 16016 -> 262 MiB, `/health` `loaded:false`, then a
+            # 200 completion after the reload), and `vram-reserve-mib=512` keeps the cushion the
+            # PICTURE path needs — measured on the 16 GB venue: with reserve 0 and `VISION: cpu` a
+            # picture request dies in prefill with `cublasGemmEx f16: cuBLAS status 14` (the card
+            # reports 13 MiB free), while 512 MiB is the figure the engine's own warning asks for
+            # there (pod-strata's `check-strata-gpu-pod` carries the measurement). Pictures are ON
+            # by default, so the reserve is part of that default, not an operator preference.
             #
             # `idle-unload` is SAFE here even though it is a LAUNCHER-mapped server option: it is
             # in the launcher's SERVER_CONFIG_OPTIONS, taken out of the engine changes and written
@@ -208,7 +212,7 @@ strata:
             # unloaded; it starts with the model"). So lazy + pictures is not reachable through any
             # supported setting in v0.2.16; measured: 16 GB resident at start with `VISION: cpu`,
             # 3 GB with `VISION: off`. Tracked in opencharly/layer-strata#31.
-            STRATA_SET: vram-reserve-mib=0 idle-unload=300
+            STRATA_SET: vram-reserve-mib=512 idle-unload=300
             # ---- the launcher's own switches, which upstream's entrypoint HARDCODES ----
             # `--access` and `--no-api-key` belong to `strata launch`, not the engine, so
             # `STRATA_SET` can never carry them (above). Upstream's entrypoint passes `--access lan`
