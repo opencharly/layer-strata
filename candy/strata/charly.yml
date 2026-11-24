@@ -500,6 +500,72 @@ strata:
                         sys.exit("P10: the patched entrypoint does not carry %r after the patch" % needle)
                 print("P10: the entrypoint maps STRATA_ACCESS and STRATA_NO_API_KEY; everything else is upstream's")
                 PY
+            # ---- P11: lazy loading WITH pictures ----
+            # Upstream's launcher refuses `lazy_load` whenever a vision reader is configured:
+            # `strata_cli/launch/runner.py` skips the key in BOTH settings paths with
+            # "# lazy loading is text-only" (opencharly/layer-strata#31). The SERVER supports the
+            # combination — `serve/server.py` computes `lazy = a.lazy or cfg.get("lazy_load") is True`
+            # and says "vision encoder unloaded; it starts with the model" — so the refusal is the
+            # launcher's policy, not a capability limit. Measured on this image before the patch:
+            # 16 GB resident 51 s after start with `VISION: cpu`; with `VISION: off` the same
+            # settings keep 3 GB until the first request.
+            #
+            # This step (a) lifts the two guards in the launcher, each replaced EXACTLY once or the
+            # build fails naming this decision, and (b) patches the entrypoint to SEED the documented
+            # defaults file at container start — never at build time, because /data is the runtime
+            # bind and a build-time write would be masked:
+            #   ${XDG_CONFIG_HOME:-/data/config}/strata/run-defaults.json   {"lazy_load": true}
+            # created only when absent: an operator who already has the file keeps it.
+            #
+            # Delete this step the moment upstream accepts lazy loading beside a vision reader
+            # (layer-strata#31).
+            - run: lift the launcher's vision guard on lazy loading, and seed its defaults at start
+              run_as: root
+              command: |
+                set -eu
+                /opt/strata/terminal/python/bin/python3 - <<'PY'
+                import sys
+
+                path = "/opt/strata/terminal/strata_cli/launch/runner.py"
+                src = open(path, encoding="utf-8").read()
+                subs = [
+                    ('elif key == "lazy_load" and value and cfg.get("vision"):',
+                     'elif False:  # charly P11: the SERVER supports lazy with a vision reader (layer-strata#31)'),
+                    ('if key == "lazy_load" and prev[key] and cfg.get("vision"):',
+                     'if False:  # charly P11: carry lazy_load beside a vision reader (layer-strata#31)'),
+                ]
+                for old, new in subs:
+                    n = src.count(old)
+                    if n != 1:
+                        sys.exit("P11: upstream's launcher carries %d matching line(s) for %r, expected exactly 1 — "
+                                 "the lazy-loading guard patch no longer applies (opencharly/layer-strata#31)" % (n, old))
+                    src = src.replace(old, new)
+                open(path, "w", encoding="utf-8").write(src)
+                patched = open(path, encoding="utf-8").read()
+                for needle in ('elif False:  # charly P11', 'if False:  # charly P11'):
+                    if needle not in patched:
+                        sys.exit("P11: the patched launcher does not carry %r after the patch" % needle)
+
+                entry = "/opt/strata/entrypoint.sh"
+                esrc = open(entry, encoding="utf-8").read()
+                anchor = 'set -- launch --no-tui --access "${STRATA_ACCESS:-lan}" --port "$PORT"'
+                seed = ('# charly P11: the pod defers the model load to the first request; the launcher\n'
+                        '# reads this documented defaults file (run-defaults.json beside launch-presets/).\n'
+                        'cfg_dir="${XDG_CONFIG_HOME:-/data/config}/strata"\n'
+                        'mkdir -p "$cfg_dir"\n'
+                        'if [ ! -f "$cfg_dir/run-defaults.json" ]; then\n'
+                        '  printf "%s\\n" \'{"lazy_load": true}\' > "$cfg_dir/run-defaults.json"\n'
+                        'fi\n')
+                n2 = esrc.count(anchor)
+                if n2 != 1:
+                    sys.exit("P11: upstream's entrypoint carries %d matching launch line(s), expected exactly 1 — "
+                             "the defaults seed no longer applies (opencharly/layer-strata#31)" % n2)
+                esrc = esrc.replace(anchor, seed + anchor)
+                open(entry, "w", encoding="utf-8").write(esrc)
+                if '{"lazy_load": true}' not in open(entry, encoding="utf-8").read():
+                    sys.exit("P11: the patched entrypoint does not seed run-defaults.json")
+                print("P11: the launcher carries lazy_load beside pictures; the entrypoint seeds run-defaults.json")
+                PY
             # ---- the probe helper: ONE implementation of "ask the running server" ----
             # Every runtime assertion below, and the bed's own, ask the same three questions (is the
             # projection well formed, does the key gate match this deployment, does a completion
